@@ -49,10 +49,6 @@ export function ChatHeader({
         setIsSessionHistoryModalOpen(true);
     };
 
-    const handleSaveApiKey = (apiKey: string) => {
-        localStorage.setItem('chatApiKey', apiKey);
-    };
-
     const handleSelectSession = (sessionId: string, messages: Message[]) => {
         onSelectSession?.(sessionId, messages);
     };
@@ -101,6 +97,8 @@ export function ChatHeader({
                     <h3 className="text-[14px] font-medium text-gray-800">{title}</h3>
                     <button
                         onClick={handleApiKeyClick}
+                        title="Models & connections"
+                        aria-label="Models & connections"
                         className="p-1 bg-white border-none hover:!bg-gray-100 rounded text-gray-500"
                     >
                         <CogIcon className="h-4 w-4" />
@@ -137,8 +135,6 @@ export function ChatHeader({
             <ApiKeyModal
                 isOpen={isApiKeyModalOpen}
                 onClose={() => setIsApiKeyModalOpen(false)}
-                onSave={handleSaveApiKey}
-                initialApiKey={localStorage.getItem('chatApiKey') || ''}
                 onConfigurationUpdated={onConfigurationUpdated}
             />
 
@@ -150,4 +146,4 @@ export function ChatHeader({
             />
         </>
     );
-} 
+}

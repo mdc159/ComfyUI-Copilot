@@ -1,3 +1,4 @@
+import asyncio
 # Workflow Rewrite Agent for ComfyUI Workflow Structure Fixes
 
 import json
@@ -331,7 +332,7 @@ def tool_error_function(ctx: RunContextWrapper[Any], error: Exception) -> str:
 
 # def update_workflow(session_id: str, workflow_data: Union[Dict[str, Any], str]) -> str:
 @function_tool
-def update_workflow(workflow_data: str = "") -> str:
+async def update_workflow(workflow_data: str = "") -> str:
     """
     更新当前session的工作流数据
 
@@ -349,7 +350,7 @@ def update_workflow(workflow_data: str = "") -> str:
         if not workflow_data or not isinstance(workflow_data, str) or not workflow_data.strip():
             rewrite_context = get_rewrite_context()
             log.info(f"[update_workflow] workflow_data: {workflow_data}, trigger simple rewrite, context: {rewrite_context}")
-            workflow_data = rewrite_workflow_simple(rewrite_context)
+            workflow_data = await asyncio.to_thread(rewrite_workflow_simple, rewrite_context)
             
         
         log.info(f"[update_workflow] workflow_data: {workflow_data}")

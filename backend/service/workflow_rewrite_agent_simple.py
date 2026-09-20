@@ -12,10 +12,9 @@ from typing import Dict, Any, Optional
 import asyncio
 from pydantic import BaseModel
 from ..utils.key_utils import workflow_config_adapt
-from openai import OpenAI
+from ..llm.model import structured_completion
 
 from ..agent_factory import create_agent
-from ..utils.globals import WORKFLOW_MODEL_NAME, get_comfyui_copilot_api_key, LLM_DEFAULT_BASE_URL
 from ..utils.request_context import get_config, get_rewrite_context, RewriteContext
 from ..utils.logger import log
 
@@ -85,25 +84,10 @@ ComfyUI API格式工作流是一个JSON对象，其中：
         config = get_config()
         config = workflow_config_adapt(config)
 
-        # 创建OpenAI客户端
-        client = OpenAI(
-            base_url = config.get("openai_base_url") or LLM_DEFAULT_BASE_URL,
-            api_key = config.get("openai_api_key") or get_comfyui_copilot_api_key() or ""
-        )
-
-        # 调用LLM
-        completion = client.chat.completions.parse(
-            model=(config or {}).get("model_select") or WORKFLOW_MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context_info}
-            ],
-            max_tokens=8192,
-            temperature=0.1,  # 降低随机性，确保输出一致性
-            response_format=RewriteResponse  # 要求返回JSON格式
-        )
-
-        result = completion.choices[0].message.parsed
+        result = structured_completion(config, [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": context_info},
+        ], RewriteResponse, maxTokens=8192, temperature=0.1)
         log.info(f"workflow simple rewrite LLM response: {result}")
 
         # 解析返回的JSON

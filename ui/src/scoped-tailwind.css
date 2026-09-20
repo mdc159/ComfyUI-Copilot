@@ -42,6 +42,36 @@
   }
 }
 
+/* Pair foreground and surface from the host theme; body class names vary by ComfyUI version. */
+#comfyui-copilot-plugin .copilot-theme-card {
+  background: var(--p-panel-background, var(--comfy-menu-bg, #ffffff));
+  color: var(--p-text-color, var(--fg-color, #1f2937));
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+}
+
+#comfyui-copilot-plugin .copilot-card-label {
+  color: inherit;
+}
+
+#comfyui-copilot-plugin .copilot-model-settings {
+  background: var(--p-panel-background, var(--comfy-menu-bg, #ffffff));
+  color: var(--p-text-color, var(--fg-color, #1f2937));
+}
+
+#comfyui-copilot-plugin .copilot-model-settings :is(.text-gray-500, .text-gray-600) {
+  color: color-mix(in srgb, var(--p-text-color, #1f2937) 80%, var(--p-panel-background, #ffffff));
+}
+
+#comfyui-copilot-plugin .copilot-model-settings :is(input, select) {
+  color: var(--p-text-color, var(--fg-color, #1f2937));
+  background: var(--p-panel-background, var(--comfy-menu-bg, #ffffff));
+}
+
+#comfyui-copilot-plugin .copilot-model-settings .copilot-model-save {
+  color: #ffffff;
+  background: #1d4ed8;
+}
+
 .hide-scrollbar {
   scrollbar-width: none;      /* Firefox */
   -ms-overflow-style: none;   /* IE 10+ */

@@ -10,6 +10,7 @@ from ..service.workflow_rewrite_tools import get_current_workflow
 from ..utils.globals import BACKEND_BASE_URL, get_comfyui_copilot_api_key, DISABLE_WORKFLOW_GEN
 from .. import core
 import asyncio
+from contextlib import AsyncExitStack
 import os
 import traceback
 from typing import List, Dict, Any, Optional
@@ -114,7 +115,7 @@ async def comfyui_agent_invoke(messages: List[Dict[str, Any]], images: List[Imag
         
         # Optimize messages with memory compression
         log.info(f"[MCP] Original messages count: {len(messages)}")
-        messages = message_memory_optimize(session_id, messages)
+        messages = await asyncio.to_thread(message_memory_optimize, session_id, messages)
         log.info(f"[MCP] Optimized messages count: {len(messages)}, messages: {messages}")
         
         # Create MCP server instances
@@ -138,9 +139,11 @@ async def comfyui_agent_invoke(messages: List[Dict[str, Any]], images: List[Imag
             client_session_timeout_seconds=300.0
         )
         
-        server_list = [mcp_server, bing_server]
+        server_list = [mcp_server, bing_server] if os.getenv("COPILOT_REMOTE_TOOLS", "true").lower() == "true" else []
         
-        async with mcp_server, bing_server:
+        async with AsyncExitStack() as stack:
+            for remote_server in server_list:
+                await stack.enter_async_context(remote_server)
             
             # 创建workflow_rewrite_agent实例 (session_id通过context获取)
             workflow_rewrite_agent_instance = create_workflow_rewrite_agent()
@@ -309,7 +312,7 @@ You must adhere to the following constraints to complete the task:
 
             from agents import Agent, Runner, set_trace_processors, set_tracing_disabled, set_default_openai_api
             # from langsmith.wrappers import OpenAIAgentsTracingProcessor
-            set_tracing_disabled(False)
+            set_tracing_disabled(True)
             set_default_openai_api("chat_completions")
             # set_trace_processors([OpenAIAgentsTracingProcessor()])
 

@@ -30,15 +30,9 @@ import folder_paths
 
 
 def get_llm_config_from_headers(request):
-    """Extract LLM-related configuration from request headers."""
-    return {
-        "openai_api_key": request.headers.get('Openai-Api-Key'),
-        "openai_base_url": request.headers.get('Openai-Base-Url'),
-        # Workflow LLM settings (optional, used by tools/agents that need a different LLM)
-        "workflow_llm_api_key": request.headers.get('Workflow-LLM-Api-Key'),
-        "workflow_llm_base_url": request.headers.get('Workflow-LLM-Base-Url'),
-        "workflow_llm_model": request.headers.get('Workflow-LLM-Model'),
-    }
+    """Legacy entry point; model settings are owned by the server service."""
+    return {}  # LLM credentials never come from browser request headers.
+
 
 
 # 全局下载进度存储
@@ -292,7 +286,7 @@ async def invoke_chat(request):
         has_sent_response = False
         previous_text_length = 0
         
-        log.info(f"config: {config}")
+        log.info("Chat model configuration loaded")
         
         # Pass messages in OpenAI format (images are now included in messages)
         # Config is now available through request context
@@ -532,7 +526,7 @@ async def invoke_debug(request):
     # 设置请求上下文 - 为debug请求建立context隔离
     set_request_context(session_id, None, config)
     
-    log.info(f"Debug agent config: {config}")
+    log.info("Debug model configuration loaded")
     log.info(f"Session ID: {session_id}")
     log.info(f"Workflow nodes: {list(workflow_data.keys()) if workflow_data else 'None'}")
 

@@ -117,29 +117,12 @@ DISABLE_WORKFLOW_GEN = os.getenv("DISABLE_WORKFLOW_GEN") or False
 TENANT_ID = os.getenv("TENANT_ID") or None
 
 def apply_llm_env_defaults(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Apply LLM-related defaults with precedence:
-    request config > .env > hard-coded defaults.
+    """Keep legacy request entry points free of model credentials."""
+    # Credentials are resolved only inside the owned model service.
+    return {k: v for k, v in (config or {}).items()
+            if k not in ("openai_api_key", "openai_base_url", "workflow_llm_api_key",
+                         "workflow_llm_base_url", "workflow_llm_model")}
 
-    This function does NOT mutate the incoming config.
-    """
-    cfg: Dict[str, Any] = dict(config or {})
-
-    # Chat LLM (OpenAI-compatible) settings
-    if not cfg.get("openai_api_key") and OPENAI_API_KEY:
-        cfg["openai_api_key"] = OPENAI_API_KEY
-    if not cfg.get("openai_base_url") and OPENAI_BASE_URL:
-        cfg["openai_base_url"] = OPENAI_BASE_URL
-
-    # Workflow LLM settings (tools/agents that might use a different LLM)
-    if not cfg.get("workflow_llm_api_key") and WORKFLOW_LLM_API_KEY:
-        cfg["workflow_llm_api_key"] = WORKFLOW_LLM_API_KEY
-    if not cfg.get("workflow_llm_base_url") and WORKFLOW_LLM_BASE_URL:
-        cfg["workflow_llm_base_url"] = WORKFLOW_LLM_BASE_URL
-    if not cfg.get("workflow_llm_model") and WORKFLOW_LLM_MODEL:
-        cfg["workflow_llm_model"] = WORKFLOW_LLM_MODEL
-
-    return cfg
 
 
 def is_lmstudio_url(base_url: str) -> bool:

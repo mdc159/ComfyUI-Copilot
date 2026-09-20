@@ -137,7 +137,7 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
         if (selectedModel && list.findIndex(model => model.name === selectedModel) !== -1) {
             onModelChange(selectedModel)
         } else {
-            onModelChange(list[0].name)
+            onModelChange(list[0]?.name || "")
         }
         setLocalStorage(LocalStorageKeys.MODELS_POP_VIEW_LIST, JSON.stringify(list));
         setModels(list);
@@ -151,25 +151,8 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
             updateModels(result.models);
         } catch (error) {
             console.error('Failed to load models:', error);
-            // Fallback to default models if API fails
-            const list = [
-                {
-                    "label": "gemini-2.5-flash",
-                    "name": "gemini-2.5-flash",
-                    "image_enable": true
-                },
-                {
-                    "label": "gpt-4.1-mini",
-                    "name": "gpt-4.1-mini-2025-04-14-GlobalStandard",
-                    "image_enable": true,
-                },
-                {
-                    "label": "gpt-4.1",
-                    "name": "gpt-4.1-2025-04-14-GlobalStandard",
-                    "image_enable": true,
-                }
-            ]
-            updateModels(list);
+            setModels([]);
+            onModelChange("");
         }
         setIsLoadingModels(false)
     };
@@ -181,18 +164,6 @@ export const ChatInput = forwardRef<ChatInputRef, ChatInputProps>(({
 
     // Load models on component mount
     useEffect(() => {
-        // 1天之内不再重新获取models
-        const currentTime = new Date().getTime()
-        const time = getLocalStorage(LocalStorageKeys.MODELS_POP_VIEW_TIME);
-        // 一天之内使用当前缓存
-        if (!!Number(time) && currentTime - Number(time) < 1000 * 60 * 60 * 24) {
-            const list = getLocalStorage(LocalStorageKeys.MODELS_POP_VIEW_LIST);
-            if (!!list) {
-                updateModels(JSON.parse(list));
-            }
-            return;
-        }
-        setLocalStorage(LocalStorageKeys.MODELS_POP_VIEW_TIME, new Date().getTime().toString());
         loadModels();
     }, []);
 

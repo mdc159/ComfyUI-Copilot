@@ -1,5 +1,19 @@
 [中文](./README_CN.md) ｜ English
 
+## mdc159 fork: model connections
+
+This fork replaces LLM authentication and model selection with API credentials,
+provider subscription sign-ins, and local LM Studio/Ollama connections. It keeps
+Copilot's existing agents and workflow tools and includes the built frontend.
+
+**[Installation and model setup](./LLM-CONNECTIONS.md#install-on-another-windows-portable-comfyui)**
+requires Node.js 22.19+ and the Python environment used by ComfyUI. Saved credentials
+currently require Windows. Install from `mdc159/ComfyUI-Copilot`, and configure keys
+or sign in separately on each machine. Do not install a second upstream copy.
+
+The upstream documentation follows; use the fork guide above for installation
+and authentication. Hosted upstream services have separate availability limits.
+
 <div align="center">
 
 # 🎯 ComfyUI-Copilot: Your Intelligent Assistant for ComfyUI

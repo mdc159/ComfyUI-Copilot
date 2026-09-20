@@ -13,7 +13,6 @@ import { config } from '../config'
 import { fetchApi } from "../Api";
 import { Message, ChatResponse, OptimizedWorkflowRequest, OptimizedWorkflowResponse, Node, ExtItem, TrackEventRequest } from "../types/types";
 import { generateUUID } from '../utils/uuid';
-import { encryptWithRsaPublicKey } from '../utils/crypto';
 import { app } from '../utils/comfyapp';
 
 const BASE_URL = config.apiBaseUrl
@@ -29,25 +28,6 @@ const getApiKey = () => {
 
 const setApiKey = (apiKey: string) => {
     localStorage.setItem('chatApiKey', apiKey);
-};
-
-// Get OpenAI configuration from localStorage
-const getOpenAiConfig = () => {
-    const openaiApiKey = localStorage.getItem('openaiApiKey');
-    const openaiBaseUrl = localStorage.getItem('openaiBaseUrl');
-    const rsaPublicKey = localStorage.getItem('rsaPublicKey');
-    const workflowLLMApiKey = localStorage.getItem('workflowLLMApiKey');
-    const workflowLLMBaseUrl = localStorage.getItem('workflowLLMBaseUrl');
-    const workflowLLMModel = localStorage.getItem('workflowLLMModel');
-    
-    return { 
-        openaiApiKey: openaiApiKey || '', 
-        openaiBaseUrl: openaiBaseUrl || '', 
-        rsaPublicKey,
-        workflowLLMApiKey: workflowLLMApiKey || '',
-        workflowLLMBaseUrl: workflowLLMBaseUrl || '',
-        workflowLLMModel: workflowLLMModel || '',
-    };
 };
 
 // Get browser language
@@ -147,7 +127,6 @@ export namespace WorkflowChatAPI {
     try {
       const apiKey = getApiKey();
       const browserLanguage = app.extensionManager.setting.get('Comfy.Locale');
-      const { openaiApiKey, openaiBaseUrl, rsaPublicKey, workflowLLMApiKey, workflowLLMBaseUrl, workflowLLMModel } = getOpenAiConfig();
       // Generate a unique message ID for this chat request
       const messageId = generateUUID();
 
@@ -256,24 +235,11 @@ export namespace WorkflowChatAPI {
         'Accept-Language': browserLanguage,
       };
       
-      // Add OpenAI configuration headers if available
-      if (openaiApiKey && openaiApiKey.trim() !== '' && rsaPublicKey) {
-        try {
-          headers['Openai-Base-Url'] = openaiBaseUrl;
-        } catch (error) {
-          console.error('Error encrypting OpenAI API key:', error);
-        }
-      }
+
       // Add Workflow LLM headers if available
-      if (workflowLLMBaseUrl) {
-        headers['Workflow-LLM-Base-Url'] = workflowLLMBaseUrl;
-      }
-      if (workflowLLMApiKey) {
-        headers['Workflow-LLM-Api-Key'] = workflowLLMApiKey;
-      }
-      if (workflowLLMModel) {
-        headers['Workflow-LLM-Model'] = workflowLLMModel;
-      }
+
+
+
       
       // Create controller and combine with external signal if provided
       const controller = new AbortController();
@@ -290,8 +256,6 @@ export namespace WorkflowChatAPI {
       let chatUrl = `/api/chat/invoke`
       if(intent && intent !== '') {
         chatUrl = `${BASE_URL}/api/chat/invoke`
-      } else {
-        headers['Openai-Api-Key'] = openaiApiKey;
       }
       const response = await fetch(chatUrl, {
         method: 'POST',
@@ -366,7 +330,6 @@ export namespace WorkflowChatAPI {
     try {
       const apiKey = getApiKey();
       const browserLanguage = getBrowserLanguage();
-      const { openaiApiKey, openaiBaseUrl, rsaPublicKey, workflowLLMApiKey, workflowLLMBaseUrl } = getOpenAiConfig();
       
       // Prepare headers
       const headers: Record<string, string> = {
@@ -378,23 +341,10 @@ export namespace WorkflowChatAPI {
         'Accept-Language': browserLanguage,
       };
       
-      // Add OpenAI configuration headers if available
-      if (openaiApiKey && openaiApiKey.trim() !== '' && rsaPublicKey) {
-        try {
-          const encryptedApiKey = await encryptWithRsaPublicKey(openaiApiKey as string, rsaPublicKey as string);
-          headers['Encrypted-Openai-Api-Key'] = encryptedApiKey;
-          headers['Openai-Base-Url'] = openaiBaseUrl;
-        } catch (error) {
-          console.error('Error encrypting OpenAI API key:', error);
-        }
-      }
+
       // Add Workflow LLM headers if available
-      if (workflowLLMBaseUrl) {
-        headers['Workflow-LLM-Base-Url'] = workflowLLMBaseUrl;
-      }
-      if (workflowLLMApiKey) {
-        headers['Workflow-LLM-Api-Key'] = workflowLLMApiKey;
-      }
+
+
       
       const response = await fetch(`${BASE_URL}/api/chat/get_optimized_workflow`, {
         method: 'POST',
@@ -425,7 +375,6 @@ export namespace WorkflowChatAPI {
   export async function batchGetNodeInfo(nodeTypes: string[]): Promise<any> {
     const apiKey = getApiKey();
     const browserLanguage = getBrowserLanguage();
-    const { openaiApiKey, openaiBaseUrl, rsaPublicKey, workflowLLMApiKey, workflowLLMBaseUrl } = getOpenAiConfig();
     
     // Prepare headers
     const headers: Record<string, string> = {
@@ -435,23 +384,10 @@ export namespace WorkflowChatAPI {
       'Accept-Language': browserLanguage,
     };
     
-    // Add OpenAI configuration headers if available
-    if (openaiApiKey && openaiApiKey.trim() !== '' && rsaPublicKey) {
-      try {
-        const encryptedApiKey = await encryptWithRsaPublicKey(openaiApiKey as string, rsaPublicKey as string);
-        headers['Encrypted-Openai-Api-Key'] = encryptedApiKey;
-        headers['Openai-Base-Url'] = openaiBaseUrl;
-      } catch (error) {
-        console.error('Error encrypting OpenAI API key:', error);
-      }
-    }
+
     // Add Workflow LLM headers if available
-    if (workflowLLMBaseUrl) {
-      headers['Workflow-LLM-Base-Url'] = workflowLLMBaseUrl;
-    }
-    if (workflowLLMApiKey) {
-      headers['Workflow-LLM-Api-Key'] = workflowLLMApiKey;
-    }
+
+
     
     const response = await fetch(`${BASE_URL}/api/chat/get_node_info_by_types`, {
       method: 'POST',
@@ -585,15 +521,9 @@ export namespace WorkflowChatAPI {
       'trace-id': generateUUID(),
     };
     
-    const openaiApiKey = localStorage.getItem('openaiApiKey');
-    if (openaiApiKey) {
-      headers['Openai-Api-Key'] = openaiApiKey;
-    }
+
     
-    const openaiBaseUrl = localStorage.getItem('openaiBaseUrl');
-    if (openaiBaseUrl) {
-      headers['Openai-Base-Url'] = openaiBaseUrl;
-    }
+
 
     const response = await fetch('/api/model_config', {
       method: 'GET',
@@ -605,68 +535,11 @@ export namespace WorkflowChatAPI {
     return result as { models: { label: string; name: string; image_enable: boolean }[] };
   }
 
-  // Fetch models directly from an OpenAI-compatible LLM server via its /models endpoint
-  export async function listModelsFromLLM(
-    baseUrl: string,
-    apiKey?: string
-  ): Promise<string[]> {
-    const headers: Record<string, string> = {
-      'accept': 'application/json',
-    };
-
-    if (apiKey && apiKey.trim() !== '') {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
-
-    // Normalize base URL to avoid double slashes
-    const normalizedBase = baseUrl.replace(/\/$/, '');
-    const url = `${normalizedBase}/models`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch models from LLM: ${response.status} ${response.statusText}`);
-    }
-
-    const result = await response.json();
-
-    // Attempt to support multiple possible shapes
-    // OpenAI style: { data: [{ id: string }, ...] }
-    if (Array.isArray(result?.data)) {
-      const ids = result.data
-        .map((m: any) => (typeof m === 'string' ? m : (m?.id || m?.name)))
-        .filter((v: any) => typeof v === 'string' && v.trim() !== '');
-      return Array.from(new Set(ids));
-    }
-
-    // Alternate style: { models: [{ id/name }, ...] } or [ ... ]
-    const modelsField = result?.models ?? result;
-    if (Array.isArray(modelsField)) {
-      const ids = modelsField
-        .map((m: any) => (typeof m === 'string' ? m : (m?.id || m?.name)))
-        .filter((v: any) => typeof v === 'string' && v.trim() !== '');
-      return Array.from(new Set(ids));
-    }
-
-    // Single object with id/name
-    const single = result?.id || result?.name;
-    if (typeof single === 'string' && single.trim() !== '') {
-      return [single];
-    }
-
-    // Fallback to empty list if shape is unrecognized
-    return [];
-  }
-
   export async function* streamDebugAgent(
     workflowData: any, 
     abortSignal?: AbortSignal
   ): AsyncGenerator<ChatResponse> {
     try {
-      const { openaiApiKey, openaiBaseUrl, workflowLLMApiKey, workflowLLMBaseUrl, workflowLLMModel } = getOpenAiConfig();
       const browserLanguage = app.extensionManager.setting.get('Comfy.Locale');
       const session_id = localStorage.getItem("sessionId") || null;
       const apiKey = getApiKey();
@@ -680,21 +553,11 @@ export namespace WorkflowChatAPI {
         'Accept-Language': browserLanguage,
       };
       
-      // Add OpenAI configuration headers if available
-      if (openaiApiKey && openaiApiKey.trim() !== '') {
-        headers['Openai-Api-Key'] = openaiApiKey;
-        headers['Openai-Base-Url'] = openaiBaseUrl;
-      }
+
       // Add Workflow LLM headers if available
-      if (workflowLLMBaseUrl) {
-        headers['Workflow-LLM-Base-Url'] = workflowLLMBaseUrl;
-      }
-      if (workflowLLMApiKey) {
-        headers['Workflow-LLM-Api-Key'] = workflowLLMApiKey;
-      }
-      if (workflowLLMModel) {
-        headers['Workflow-LLM-Model'] = workflowLLMModel;
-      }
+
+
+
       // Create controller and combine with external signal if provided
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout

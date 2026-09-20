@@ -5,7 +5,7 @@ version = "2.0.28"
 license = {file = "LICENSE"}
 
 [project.urls]
-Repository = "https://github.com/AIDC-AI/ComfyUI-Copilot"
+Repository = "https://github.com/mdc159/ComfyUI-Copilot"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]

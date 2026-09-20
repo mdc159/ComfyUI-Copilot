@@ -128,7 +128,7 @@ const Showcase: React.FC<IProps> = ({ scrollRef }) => {
             <div className='text-[#4fabdb]'>
               {ICONS[index]}
             </div>
-            <div className='flex-1 text-sm text-gray-700 font-normal ml-4'>
+            <div className='copilot-card-label flex-1 text-sm font-normal ml-4'>
               {item.name}
             </div>
           </BeautifyCard>

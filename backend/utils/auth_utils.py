@@ -24,7 +24,7 @@ def extract_and_store_api_key(request) -> Optional[str]:
         if auth_header and auth_header.startswith('Bearer '):
             api_key = auth_header[7:]  # Remove 'Bearer ' prefix
             set_comfyui_copilot_api_key(api_key)
-            log.info(f"ComfyUI Copilot API key extracted and stored: {api_key[:12]}...")
+            log.info("ComfyUI Copilot service credential received")
             
             # Verify it's stored correctly
             stored_key = get_comfyui_copilot_api_key()
