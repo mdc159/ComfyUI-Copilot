@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.utils.comfy_gateway import (ComfyGateway, ComfyTarget, ComfyUnreachable, PromptLost, PromptTimeout,
                                          _target, get_target, set_target)
-from fake_comfy import CUTLASS_ERROR, FakeComfy
+from fake_comfy import CUTLASS_ERROR, OBJECT_INFO, FakeComfy
 
 PROMPT = {
     '5': {'class_type': 'EmptyLatentImage', 'inputs': {'width': 512, 'height': 512, 'batch_size': 1}},
@@ -149,7 +149,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_methods_keep_shapes(self):
         gateway = self.gateway
-        self.assertEqual(sorted(await gateway.get_installed_nodes()), ['EmptyLatentImage', 'KSampler', 'VAEDecode', 'VAEDecodeTiled'])
+        self.assertEqual(sorted(await gateway.get_installed_nodes()), sorted(OBJECT_INFO))
         self.assertIn('tile_size', (await gateway.get_object_info('VAEDecodeTiled'))['VAEDecodeTiled']['input']['required'])
         self.assertEqual(await gateway.get_object_info('Nope'), {})
         self.assertEqual(await gateway.get_queue_status(), {'queue_running': [], 'queue_pending': []})

@@ -1,0 +1,57 @@
+{
+  "https://github.com/kijai/ComfyUI-KJNodes": [
+    [
+      "ImageResizeKJ",
+      "GetImageSizeAndCount",
+      "ColorMatch",
+      "VRAM_Debug"
+    ],
+    {
+      "title_aux": "KJNodes for ComfyUI"
+    }
+  ],
+  "https://github.com/ltdrdata/ComfyUI-Impact-Pack": [
+    [
+      "SAMLoader",
+      "FaceDetailer",
+      "ImpactWildcardProcessor"
+    ],
+    {
+      "author": "Dr.Lt.Data",
+      "description": "This extension offers various detector nodes and detailer nodes that allow you to configure a workflow that automatically enhances facial details. And provide iterative upscaler.",
+      "nickname": "Impact Pack",
+      "preemptions": [
+        "SAMLoader"
+      ],
+      "title": "Impact Pack",
+      "title_aux": "ComfyUI Impact Pack"
+    }
+  ],
+  "https://github.com/someone/ComfyUI-SomeoneUtils": [
+    [
+      "ImageResizeKJ",
+      "SomeoneTextConcat"
+    ],
+    {
+      "title_aux": "Someone Utility Nodes"
+    }
+  ],
+  "https://github.com/acme/ComfyUI-AcmeTiled": [
+    [
+      "AcmeTiledUpscale",
+      "AcmeTiledVAEDecode"
+    ],
+    {
+      "nodename_pattern": "^Acme",
+      "title_aux": "Acme Tiled Tools"
+    }
+  ],
+  "https://gist.githubusercontent.com/alkemann/7361b8eb966f29c8238fd323409efb68/raw/f9605be0b38d38d3e3a2988f89248ff557010076/alkemann.py": [
+    [
+      "Int to Text"
+    ],
+    {
+      "title_aux": "alkemann nodes"
+    }
+  ]
+}
