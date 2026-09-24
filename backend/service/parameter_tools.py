@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 from agents.tool import function_tool
 from ..utils.modelscope_gateway import ModelScopeGateway
@@ -480,10 +481,25 @@ def suggest_model_download(models_list: str = "") -> str:
     except Exception as e:
         return json.dumps({"error": f"Failed to suggest model download: {str(e)}"})
 
+def parse_parameter_value(new_value: Any) -> Any:
+    """JSON-decode a string value when possible (numbers, booleans, null), else keep the string.
+
+    The agent passes every value as a string; ComfyUI coerces INT/FLOAT at validation but
+    bool("false") is True, so booleans must be decoded here.
+    """
+    if not isinstance(new_value, str):
+        return new_value
+    try:
+        return json.loads(new_value)
+    except (json.JSONDecodeError, ValueError):
+        return new_value
+
+
 @function_tool
 def update_workflow_parameter(node_id: str, param_name: str, new_value: str) -> str:
-    """更新工作流中的特定参数"""
+    """更新工作流中的特定参数。new_value is parsed as JSON when possible (512 -> int, false -> bool), otherwise kept as text."""
     try:
+        new_value = parse_parameter_value(new_value)
         session_id = get_session_id()
         if not session_id:
             log.error("update_workflow_parameter: No session_id found in context")

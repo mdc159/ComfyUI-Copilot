@@ -3,7 +3,7 @@ Debug Agent for ComfyUI Workflow Error Analysis
 '''
 import json
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from agents.tool import function_tool
 
@@ -20,117 +20,44 @@ from ..service.link_agent_tools import *
 from ..dao.workflow_table import get_workflow_data, save_workflow_data
 from ..utils.request_context import get_session_id, get_config
 from ..tools.run_workflow import run_workflow
+from ..tools.runtime_errors import analyze_error
+from ..tools.graph_edit import replace_node_class
+from ..tools.system import get_system_stats
 from ..utils.logger import log
+
+EXECUTE_RUN_BUDGET = 4
 
 
 @function_tool
 def analyze_error_type(error_data: str) -> str:
-    """分析错误类型，判断应该使用哪个agent，输入可以是JSON字符串或普通文本"""
+    """分析错误类型，判断应该使用哪个agent，输入可以是JSON字符串或普通文本.
+    For a run_workflow execute result with execution_error, error_type is runtime_<oom|dtype|shape|missing_file|other>
+    and recommended_agent is runtime_error_agent for oom/dtype/shape."""
     try:
-        error_analysis = {
-            "error_type": "unknown",
-            "recommended_agent": "workflow_bugfix_default_agent",
-            "error_details": [],
-            "affected_nodes": []
-        }
-        
-        # 将输入转换为字符串进行关键词匹配
-        error_text = str(error_data).lower()
-        
-        # 检查成功状态
-        if any(keyword in error_text for keyword in [
-            '"success": true', "'success': true", "validation successful", "workflow validation successful"
-        ]):
-            error_analysis["error_type"] = "no_error"
-            error_analysis["recommended_agent"] = "none"
-            error_analysis["error_details"] = [{"message": "Workflow validation successful"}]
-            return json.dumps(error_analysis)
-        
-        # 统计不同类型的错误
-        parameter_errors = 0
-        connection_errors = 0
-        other_errors = 0
-        
-        # 提取节点ID（简单的正则匹配）
-        import re
-        node_id_matches = re.findall(r'"(\d+)":', error_text) or re.findall(r"'(\d+)':", error_text)
-        if node_id_matches:
-            error_analysis["affected_nodes"] = list(set(node_id_matches))
-        
-        # 连接相关错误的关键词（优先判断，因为结构性错误更重要）
-        connection_keywords = [
-            "connection", "input connection", "required input", "missing input",
-            "not connected", "no connection", "link", "output", "socket",
-            "missing_input", "invalid_connection", "connection_error"
-        ]
-        
-        # 参数相关错误的关键词
-        parameter_keywords = [
-            "value not in list", "invalid value", "not found in list",
-            "parameter value", "invalid parameter", "model not found", 
-            "invalid image file", "value_not_in_list", "invalid_input"
-        ]
-        
-        # 计算错误类型出现次数
-        for keyword in connection_keywords:
-            if keyword in error_text:
-                connection_errors += error_text.count(keyword)
-        
-        for keyword in parameter_keywords:
-            if keyword in error_text:
-                parameter_errors += error_text.count(keyword)
-        
-        # 如果没有匹配到特定错误类型，检查是否有一般性错误指示
-        if connection_errors == 0 and parameter_errors == 0:
-            general_error_keywords = ["error", "failed", "exception", "invalid"]
-            for keyword in general_error_keywords:
-                if keyword in error_text:
-                    other_errors += 1
-                    break
-        
-        # 根据错误类型决定使用哪个agent
-        if connection_errors > 0 and parameter_errors == 0 and other_errors == 0:
-            # 纯连接错误，使用专门的link_agent
-            error_analysis["error_type"] = "connection_error"
-            error_analysis["recommended_agent"] = "link_agent"
-        elif connection_errors > 0:
-            # 混合错误，优先处理连接问题
-            error_analysis["error_type"] = "mixed_connection_error"
-            error_analysis["recommended_agent"] = "link_agent"
-        elif parameter_errors > 0:
-            error_analysis["error_type"] = "parameter_error"
-            error_analysis["recommended_agent"] = "parameter_agent"
-        elif other_errors > 0:
-            error_analysis["error_type"] = "structural_error"
-            error_analysis["recommended_agent"] = "workflow_bugfix_default_agent"
-        else:
-            # 没有检测到明确的错误模式，使用默认agent
-            error_analysis["error_type"] = "unknown"
-            error_analysis["recommended_agent"] = "workflow_bugfix_default_agent"
-        
-        # 添加错误详情（基于文本内容）
-        if connection_errors > 0:
-            error_analysis["error_details"].append({
-                "error_type": "connection_error",
-                "message": f"Detected {connection_errors} connection-related issues",
-                "details": "Connection or input/output related errors found"
-            })
-        
-        if parameter_errors > 0:
-            error_analysis["error_details"].append({
-                "error_type": "parameter_error", 
-                "message": f"Detected {parameter_errors} parameter-related issues",
-                "details": "Parameter value or configuration related errors found"
-            })
-        
-        return json.dumps(error_analysis)
-        
+        return json.dumps(analyze_error(error_data))
     except Exception as e:
         return json.dumps({
             "error_type": "analysis_failed",
             "recommended_agent": "workflow_bugfix_default_agent",
             "error": f"Failed to analyze error: {str(e)}"
         })
+
+
+@function_tool
+def report_limitation(reason: str, next_steps: str) -> str:
+    """Record that debugging stops without a successful execution. reason: what blocks the fix
+    (missing model, input image, launch flag, run budget spent); next_steps: exactly what the user must do."""
+    return json.dumps({"limitation": {"reason": reason, "next_steps": next_steps}})
+
+
+def debug_outcome(runs: List[Dict[str, Any]], limitation: Optional[Dict[str, Any]]) -> str:
+    """'executed' when the last execute-mode run succeeded, else 'limitation' if one was reported, else 'unresolved'."""
+    execute_runs = [run for run in runs if isinstance(run, dict) and run.get("mode") == "execute"]
+    if execute_runs and execute_runs[-1].get("status") == "success":
+        return "executed"
+    if limitation:
+        return "limitation"
+    return "unresolved"
 
 @function_tool
 def save_current_workflow(workflow_data: str) -> str:
@@ -192,37 +119,21 @@ async def debug_workflow_errors(workflow_data: Dict[str, Any]):
             name="ComfyUI-Debug-Coordinator",
             instructions=f"""You are a ComfyUI workflow debugging coordinator. Your role is to analyze workflow errors and coordinate with specialized agents to fix them.
 
-**Your Process:**
-1. **Validate the workflow**: Use run_workflow(mode="validate") to run ComfyUI's structural check (nothing is queued, no GPU use). If it returns status "unsupported", go straight to step 3: execution is the only check available on this target.
-2. **Analyze validation errors**: On status "validation_failed", use analyze_error_type() on the result to determine the error type and hand off to the appropriate specialist. analyze_error_type is only a reference; judge from the actual node_errors which specialist fits:
-   - Hand off to Link Agent for connection-related errors (missing connections, disconnected inputs, node linking issues)
-   - Hand off to Parameter Agent for parameter-related errors (value_not_in_list, missing models, invalid values)
-   - Hand off to Workflow Bugfix Default Agent for other structural issues (node compatibility, complex workflow restructuring)
-   After the specialist returns, re-validate (step 1).
-3. **Execute when validation passes**: Once status is "valid", call run_workflow(mode="execute"). Tell the user before calling it: this queues a real run on their GPU and waits for it to finish.
-4. **Analyze runtime errors**: On status "execution_error", the result carries execution_error with node_id, node_type, exception_type, exception_message and traceback_tail. Use analyze_error_type() on it, then hand off to the Workflow Bugfix Default Agent with the node id, node type and exception message (runtime errors such as out-of-memory, dtype or shape mismatches usually need a parameter or node change on that node). After the specialist returns, go back to step 1.
-   - Status "timeout", "cancelled" or "unreachable" means the run did not finish; report it to the user and stop.
-5. **Complete only after a successful execution**: Report success ONLY when run_workflow(mode="execute") returned status "success". Report what was changed, elapsed_seconds and the outputs. Never say the workflow is fixed after validation alone.
-6. **Repeat until complete**: Continue this cycle until an execute run succeeds or a maximum of 10 iterations.
+**Your Rules:**
+1. run_workflow(mode="validate"). Nothing is queued and no GPU is used. On status "validation_failed" with node_errors: analyze_error_type() on the result, then hand off (Link Agent for connection errors, Parameter Agent for value_not_in_list / missing models / invalid values, Workflow Bugfix Default Agent for other structural issues). analyze_error_type is a reference; judge from the actual node_errors. Re-validate after every specialist return. Status "unsupported" means validation is unavailable on this target: go to rule 2.
+2. When validation passes (status "valid"), run_workflow(mode="execute"). Say so before calling it: this queues a real run on the user's GPU and waits for it to finish.
+3. On status "execution_error": analyze_error_type() on the result. Hand off to the Runtime Error Agent for runtime_oom / runtime_dtype / runtime_shape (out of memory, dtype or shape mismatch), and to the Workflow Bugfix Default Agent for anything else, passing node_id, node_type, exception_type and exception_message. After the specialist returns, go back to rule 1. Status "timeout", "cancelled" or "unreachable" means the run did not finish: report it and call report_limitation.
+4. Complete ONLY when an execute run returned status "success". Then report what was changed, elapsed_seconds and the outputs.
+5. If a fix needs the user (model download, input image, launch flag such as --lowvram) or after {EXECUTE_RUN_BUDGET} execute runs without success, call report_limitation(reason, next_steps) and stop. Never say the workflow is fixed after validation alone.
 
-**Critical Guidelines:**
-- ALWAYS validate the workflow first to check for errors
-- If errors occur, analyze them and hand off to the appropriate specialist
-- When specialists return: IMMEDIATELY re-validate the workflow to check if the issue is resolved
-- Continue the debugging cycle until an execute run succeeds or max iterations reached
-- Provide clear, streaming updates about what you're doing
-- Be concise but informative in your responses
+**Guidelines:**
+- Provide clear, streaming updates about what you're doing; be concise but informative
+- If a specialist reports it could not fix the error, try another specialist once, then report_limitation
 - If there is user history in history_messages, please determine the language based on the language in the history. Otherwise, use {get_language()} as the language.
-
-**Handoff Strategy:**
-- Hand off errors to specialists for fixing
-- When they return: Re-validate immediately to check results
-- If new errors appear: Analyze and hand off again
-- If same errors persist: Try different specialist (Link Agent → Parameter Agent → Workflow Bugfix Default Agent) or report limitation
 
 Start by validating the workflow to see its current state.""",
             model=WORKFLOW_MODEL_NAME,
-            tools=[run_workflow, analyze_error_type, save_current_workflow],
+            tools=[run_workflow, analyze_error_type, report_limitation, save_current_workflow],
             config={
                 "max_tokens": 8192,
                 **config
@@ -466,7 +377,58 @@ Start by validating the workflow to see its current state.""",
             }
         )
 
-        agent.handoffs = [link_agent, workflow_bugfix_default_agent, parameter_agent]
+        runtime_error_agent = create_agent(
+            name="Runtime Error Agent",
+            model=WORKFLOW_MODEL_NAME,
+            handoff_description="""
+            I am the Runtime Error Agent. I fix errors that happen while ComfyUI executes a workflow on the GPU.
+
+            I can help with:
+            - Out-of-memory errors (CUDA OOM, "Allocation on device")
+            - dtype mismatches (cutlass_fp16_linear: K mismatch, expected scalar type, mat1 and mat2 shapes)
+            - Shape mismatches (size mismatch, Sizes of tensors must match)
+
+            Call me with the node_id, node_type, exception_type and exception_message from a run_workflow execute result with status "execution_error".
+            """,
+            instructions="""
+            You are the Runtime Error Agent, an expert in making ComfyUI workflows run on consumer GPUs (assume 8 GB of VRAM unless get_system_stats says otherwise).
+
+            **CRITICAL**: Apply the cheapest fix first, state every quality trade-off you introduce, and after your changes you MUST transfer back to the ComfyUI-Debug-Coordinator so it can re-run the workflow. Never claim the error is fixed; only an execute run proves that.
+
+            **Start**: get_current_workflow(), get_system_stats() (VRAM total/free and argv, which shows whether --lowvram / --novram is already on), and get_node_info() on the failing node and the loaders feeding it.
+
+            **OOM playbook (cheapest first, stop after one or two changes and transfer back):**
+            1. batch_size -> 1 on EmptyLatentImage / EmptySD3LatentImage or any latent source (update_workflow_parameter). Trade-off: one image per run.
+            2. Resolution: EmptyLatentImage / EmptySD3LatentImage width and height -> at most 1024x1024 for SDXL / Flux, at most 768x768 for video models; keep multiples of 64. Trade-off: lower resolution output.
+            3. VAEDecode -> VAEDecodeTiled with tile_size 512 via replace_node_class(node_id, "VAEDecodeTiled", '{"tile_size": 512}'). Trade-off: slight seams are possible, output is otherwise equivalent.
+            4. Loader weights -> a lighter variant only if get_model_files() shows one on disk: UNETLoader weight_dtype = fp8_e4m3fn, or an fp8 checkpoint file with the same base model. Use UnetLoaderGGUF only if search_node_local() confirms the node exists and a .gguf file is present. Trade-off: fp8 / GGUF quantisation lowers quality slightly.
+            5. --lowvram / --novram launch flags cannot be applied by you. If nothing above is enough, check argv from get_system_stats and tell the coordinator to call report_limitation with the exact edit: in run_nvidia_gpu.bat append --lowvram to the python main.py line, then restart ComfyUI.
+
+            **dtype playbook** (cutlass_fp16_linear: K mismatch, expected scalar type, Half / BFloat16, mat1 and mat2 shapes):
+            - Usually a mismatched model family or text encoder: an SD1.5 CLIP fed into an SDXL model, a wrong DualCLIPLoader.type (must match the UNET: flux, sdxl, sd3, wan, hunyuan_video ...), or fp8 weights on a node that expects fp16.
+            - Check every loader with get_node_info() and get_model_files() and fix the parameter with update_workflow_parameter(); state which model family you assumed.
+            - If the only fix is a different model file that is not on disk, tell the coordinator to call report_limitation with the file needed and where it goes.
+
+            **shape playbook** (size mismatch, Sizes of tensors must match):
+            - width / height on latent and image-resize nodes -> multiples of 64 (multiples of 8 at least), same aspect for every latent in the graph.
+            - ControlNet, reference, mask and inpaint images must match the latent size: add or adjust the resize node feeding them, or set the latent to the image size.
+
+            **Rules:**
+            - Cheapest change first; do not stack every fix at once.
+            - Every response lists the changes made and the quality trade-off of each.
+            - Values passed to update_workflow_parameter are parsed as JSON: pass "1" for an int, "false" for a bool, plain text for names.
+            - ALWAYS transfer back to ComfyUI-Debug-Coordinator; do not end without handoff.
+            """,
+            tools=[get_current_workflow, get_node_info, search_node_local, get_model_files, get_system_stats,
+                   update_workflow_parameter, replace_node_class, update_workflow],
+            handoffs=[agent],
+            config={
+                "max_tokens": 8192,
+                **config
+            }
+        )
+
+        agent.handoffs = [link_agent, workflow_bugfix_default_agent, parameter_agent, runtime_error_agent]
 
         # Initial message to start the debugging process
         messages = [{"role": "user", "content": f"Validate and debug this ComfyUI workflow."}]
@@ -490,7 +452,12 @@ Start by validating the workflow to see its current state.""",
         
         # Collect workflow update ext data from tools
         workflow_update_ext = None
-        
+
+        # Outcome tracking: tool call id -> tool name, run_workflow results, reported limitation
+        tool_names_by_call_id: Dict[str, str] = {}
+        runs: List[Dict[str, Any]] = []
+        limitation: Optional[Dict[str, Any]] = None
+
         async for event in result.stream_events():
             # Handle different event types according to OpenAI Agents documentation
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
@@ -532,7 +499,10 @@ Start by validating the workflow to see its current state.""",
                 if event.item.type == "tool_call_item":
                     # Tool call started
                     tool_name = getattr(event.item.raw_item, 'name', 'unknown_tool')
-                    
+                    call_id = getattr(event.item.raw_item, 'call_id', None)
+                    if call_id:
+                        tool_names_by_call_id[str(call_id)] = tool_name
+
                     log.info(f"-- Tool called: {tool_name}")
                     # Add tool call information
                     tool_text = f"\n\n⚙ *{current_agent} is using {tool_name}...*\n\n"
@@ -559,7 +529,15 @@ Start by validating the workflow to see its current state.""",
                     # Try to parse tool output and extract ext data
                     try:
                         tool_output_json = json.loads(output)
-                        if "ext" in tool_output_json and tool_output_json["ext"]:
+                        finished_tool = tool_names_by_call_id.get(str(getattr(event.item, 'call_id', None) or ''))
+                        if isinstance(tool_output_json, dict):
+                            if finished_tool == "run_workflow":
+                                runs.append(tool_output_json)
+                                log.info(f"-- run_workflow {tool_output_json.get('mode')}: {tool_output_json.get('status')}")
+                            elif finished_tool == "report_limitation" and tool_output_json.get("limitation"):
+                                limitation = tool_output_json["limitation"]
+                                log.info(f"-- Limitation reported: {limitation.get('reason')}")
+                        if isinstance(tool_output_json, dict) and tool_output_json.get("ext"):
                             for ext_item in tool_output_json["ext"]:
                                 if ext_item.get("type") == "workflow_update" or ext_item.get("type") == "param_update":
                                     workflow_update_ext = ext_item
@@ -609,8 +587,9 @@ Start by validating the workflow to see its current state.""",
                     last_yielded_length = len(current_text)
                     yield (current_text, None)
 
-        log.info("\n=== Debug process complete ===")
-        
+        outcome = debug_outcome(runs, limitation)
+        log.info(f"\n=== Debug process complete: outcome={outcome}, runs={len(runs)} ===")
+
         # Save final workflow checkpoint after debugging completion
         debug_completion_checkpoint_id = None
         try:
@@ -636,6 +615,9 @@ Start by validating the workflow to see its current state.""",
             "type": "debug_complete",
             "data": {
                 "status": "completed",
+                "outcome": outcome,
+                "runs": runs,
+                "limitation": limitation,
                 "final_agent": current_agent,
                 "events": debug_events,
                 "total_events": len(debug_events)
@@ -673,40 +655,3 @@ Start by validating the workflow to see its current state.""",
             "finished": True
         }
         yield (error_message, ext_with_finished)
-
-
-# Test function
-async def test_debug():
-    """Test the debug agent with a sample workflow"""
-    test_workflow_data = {
-        "1": {
-            "inputs": {
-                "vae_name": "ae.sft"  # This will likely cause an error
-            },
-            "class_type": "VAELoader",
-            "_meta": {"title": "Load VAE"}
-        },
-        "2": {
-            "inputs": {
-                "ckpt_name": "sd_xl_base_1.0.safetensors"
-            },
-            "class_type": "CheckpointLoaderSimple",
-            "_meta": {"title": "Load Checkpoint"}
-        }
-    }
-    
-    config = {
-        "session_id": "test_session_123",
-        "model": WORKFLOW_MODEL_NAME,
-        "max_tokens": 8192
-    }
-    
-    async for text, ext in debug_workflow_errors(test_workflow_data, config):
-        log.info(f"Stream output: {text[-100:] if len(text) > 100 else text}")  # Print last 100 chars
-        if ext:
-            log.info(f"Ext data: {ext}")
-
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(test_debug())
