@@ -35,7 +35,8 @@ def extract_and_store_api_key(request) -> Optional[str]:
                 
             return api_key
         else:
-            log.error("No valid Authorization header found")
+            # Normal when the hosted upstream service is not in use.
+            log.debug("No Authorization header; hosted upstream tools will be unauthenticated")
             return None
     except Exception as e:
         log.error(f"Error extracting API key: {str(e)}")

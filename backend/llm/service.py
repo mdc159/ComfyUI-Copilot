@@ -1,6 +1,8 @@
 import asyncio
+from collections import deque
 import copy
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -10,6 +12,7 @@ import threading
 from urllib.parse import urlparse
 import uuid
 
+log = logging.getLogger('comfyui_copilot')
 RUNTIME = Path(__file__).resolve().parents[2] / 'llm-runtime' / 'provider.mjs'
 API_PRESETS = {
     'openai': ('OpenAI API', 'OPENAI_API_KEY'),
@@ -39,6 +42,17 @@ def atomic_json(path, data):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, indent=2), encoding='utf-8')
     os.replace(temporary, path)
+
+
+def redact(text, request):
+    """Remove credential values from runtime diagnostics before they reach the log."""
+    secrets = list((request.get('credential') or {}).values())
+    if request.get('envVar'):
+        secrets.append(os.getenv(request['envVar']))
+    for value in secrets:
+        if isinstance(value, str) and len(value) > 8:
+            text = text.replace(value, '[redacted]')
+    return text
 
 
 class CredentialStore:
@@ -201,11 +215,18 @@ class ModelService:
         while not guard.acquire(blocking=False):
             await asyncio.sleep(0.05)
         process = None
+        stderr_task = None
         try:
             command, request = self._request(connection_id, payload)
             process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 limit=16 * 1024 * 1024, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            # Drain stderr continuously so a noisy runtime cannot block on a full pipe.
+            stderr_tail = deque(maxlen=40)
+            async def drain():
+                async for raw in process.stderr:
+                    stderr_tail.append(raw.decode('utf-8', 'replace').rstrip())
+            stderr_task = asyncio.create_task(drain())
             if signin is not None:
                 signin['process'] = process
             process.stdin.write((json.dumps(request) + '\n').encode())
@@ -225,11 +246,20 @@ class ModelService:
                         result_seen = True
                     yield event
             if not result_seen:
+                await process.wait()
+                try:
+                    await asyncio.wait_for(stderr_task, 2)
+                except asyncio.TimeoutError:
+                    pass
+                log.warning('Model runtime exited with code %s before a result. stderr tail:\n%s',
+                            process.returncode, redact('\n'.join(stderr_tail), request))
                 raise ValueError('Model provider exited before completing the request')
         finally:
             if process and process.returncode is None:
                 process.kill()
                 await process.wait()
+            if stderr_task and not stderr_task.done():
+                stderr_task.cancel()
             guard.release()
 
     async def call(self, connection_id, payload):
