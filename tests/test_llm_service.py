@@ -209,6 +209,20 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(state['process'].returncode)
         self.assertFalse(self.service.connection_lock('openai-codex-login').locked())
 
+    async def test_runtime_crash_logs_redacted_stderr(self):
+        self.service.save_connection({'id': 'openai', 'api_key': 'fixture-private-key-not-real'})
+        fixture = Path(self.directory.name) / 'crash.mjs'
+        fixture.write_text("process.stdin.once('data', d => { const r = JSON.parse(d);"
+                           " console.error('boom with ' + r.credential.key); process.exit(3); });")
+        with patch('backend.llm.service.RUNTIME', fixture), self.assertLogs('comfyui_copilot', 'WARNING') as logs:
+            with self.assertRaisesRegex(ValueError, 'exited before completing'):
+                await self.service.call('openai', {'action': 'complete', 'model': 'm', 'messages': []})
+        output = '\n'.join(logs.output)
+        self.assertIn('code 3', output)
+        self.assertIn('boom with [redacted]', output)
+        self.assertNotIn('fixture-private-key-not-real', output)
+        self.assertFalse(self.service.connection_lock('openai').locked())
+
 
 class RouteTests(unittest.TestCase):
     def test_local_csrf_boundary(self):

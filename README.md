@@ -11,6 +11,9 @@ requires Node.js 22.19+ and the Python environment used by ComfyUI. Saved creden
 currently require Windows. Install from `mdc159/ComfyUI-Copilot`, and configure keys
 or sign in separately on each machine. Do not install a second upstream copy.
 
+This fork is now the maintained line; upstream is no longer updated. Changes and
+deployments are recorded in [CHANGELOG.md](./CHANGELOG.md).
+
 The upstream documentation follows; use the fork guide above for installation
 and authentication. Hosted upstream services have separate availability limits.
 
