@@ -45,12 +45,15 @@ Two findings that shaped the order:
 
 > "I would like for you to just orchestrate, not do grunt work."
 
+> "using the little bug button down at the bottom, it would start working on other fucking workflows that I wasn't even looking at."
+
 ## Phases
 
 | # | Phase | Status | Depends on |
 |---|-------|--------|------------|
 | 0 | Foundation | done (2.2.0) | — |
 | 1 | Debugger sees real execution | done (2.2.0) | 0 |
+| 1b | Debug binds to one workflow tab; remove fake showcase chips | in progress | 1 |
 | 2 | Node search, node info, install guide (offline) | in progress | 0 |
 | 3 | Web search | todo | 0 |
 | 4 | Layout: keep positions, tidy new graphs | todo | — |
@@ -84,6 +87,19 @@ Two findings that shaped the order:
   report "complete" on validation alone.
 - Tests with a fake ComfyUI that fails validation, fails at runtime, and
   succeeds.
+
+### 1b. Debug binds to one workflow tab; remove fake showcase chips
+
+Mike's report (2026-09-24, his words):
+> "using the little bug button down at the bottom, it would start working on other fucking workflows that I wasn't even looking at."
+
+**Problems:**
+- The agents identify a workflow by the browser-wide session id and always take the newest saved version, so with several tabs open a debug run can read or write another tab's graph (design: `docs/design/workflow-identity.md`).
+- The "showcase" chips shown in an empty chat (for example "debug the workflow of the current canvas") replay a pre-recorded demo conversation from `public/showcase/showcase_en.json` and never contact the backend — the recorded debug always ends with "ready for execution", which misled testing.
+
+**Fix:**
+- Carry the active tab's workflow identity on every request, pin each debug/rewrite run to the version saved at its start, and have the UI refuse to apply a change to a different tab.
+- Make every chip perform the real action (the debug chip triggers the real debugger, others send their text as a real message) and delete the recorded conversations.
 
 ### 2. Node search, node info, install guide
 - Build a local node index from ComfyUI-Manager's public database
