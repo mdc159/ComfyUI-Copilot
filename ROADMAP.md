@@ -49,8 +49,8 @@ Two findings that shaped the order:
 
 | # | Phase | Status | Depends on |
 |---|-------|--------|------------|
-| 0 | Foundation | todo | — |
-| 1 | Debugger sees real execution | todo | 0 |
+| 0 | Foundation | done (unreleased) | — |
+| 1 | Debugger sees real execution | in progress | 0 |
 | 2 | Node search, node info, install guide (offline) | todo | 0 |
 | 3 | Web search | todo | 0 |
 | 4 | Layout: keep positions, tidy new graphs | todo | — |
