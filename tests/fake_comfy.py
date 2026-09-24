@@ -53,12 +53,12 @@ OBJECT_INFO = {
             'positive': ['CONDITIONING'], 'negative': ['CONDITIONING'], 'latent_image': ['LATENT'],
             'denoise': ['FLOAT', {'default': 1.0, 'min': 0.0, 'max': 1.0}]}},
         'output': ['LATENT'], 'output_name': ['LATENT'], 'name': 'KSampler', 'display_name': 'KSampler',
-        'category': 'sampling', 'output_node': False,
+        'category': 'sampling', 'output_node': False, 'python_module': 'nodes',
     },
     'VAEDecode': {
         'input': {'required': {'samples': ['LATENT'], 'vae': ['VAE']}},
         'output': ['IMAGE'], 'output_name': ['IMAGE'], 'name': 'VAEDecode', 'display_name': 'VAE Decode',
-        'category': 'latent', 'output_node': False,
+        'category': 'latent', 'output_node': False, 'python_module': 'nodes',
     },
     'VAEDecodeTiled': {
         'input': {'required': {
@@ -67,7 +67,7 @@ OBJECT_INFO = {
             'temporal_size': ['INT', {'default': 64, 'min': 8, 'max': 4096, 'step': 4}],
             'temporal_overlap': ['INT', {'default': 8, 'min': 4, 'max': 4096, 'step': 4}]}},
         'output': ['IMAGE'], 'output_name': ['IMAGE'], 'name': 'VAEDecodeTiled', 'display_name': 'VAE Decode (Tiled)',
-        'category': '_for_testing', 'output_node': False,
+        'category': '_for_testing', 'output_node': False, 'python_module': 'nodes',
     },
     'EmptyLatentImage': {
         'input': {'required': {
@@ -75,7 +75,26 @@ OBJECT_INFO = {
             'height': ['INT', {'default': 512, 'min': 16, 'max': 16384, 'step': 8}],
             'batch_size': ['INT', {'default': 1, 'min': 1, 'max': 4096}]}},
         'output': ['LATENT'], 'output_name': ['LATENT'], 'name': 'EmptyLatentImage', 'display_name': 'Empty Latent Image',
-        'category': 'latent', 'output_node': False,
+        'category': 'latent', 'output_node': False, 'python_module': 'nodes',
+    },
+    # Installed custom node that the tests/fixtures/node_db map attributes to KJNodes.
+    'ImageResizeKJ': {
+        'input': {'required': {
+            'image': ['IMAGE'], 'width': ['INT', {'default': 512, 'min': 0, 'max': 16384, 'step': 8}],
+            'height': ['INT', {'default': 512, 'min': 0, 'max': 16384, 'step': 8}],
+            'upscale_method': [['nearest-exact', 'bilinear', 'area', 'bicubic', 'lanczos', 'box', 'hamming', 'hann', 'blackman']],
+            'keep_proportion': ['BOOLEAN', {'default': False}]},
+            'optional': {'get_image_size': ['IMAGE']}},
+        'output': ['IMAGE', 'INT', 'INT'], 'output_name': ['IMAGE', 'width', 'height'], 'name': 'ImageResizeKJ',
+        'display_name': 'Resize Image', 'description': 'Resizes the image to the specified width and height.',
+        'category': 'KJNodes/image', 'output_node': False, 'python_module': 'custom_nodes.comfyui-kjnodes',
+        'search_aliases': ['scale image', 'resize'],
+    },
+    # Installed custom node absent from the fixture map; its folder matches the Impact Pack reference.
+    'ImpactLogger': {
+        'input': {'required': {'data': ['*'], 'text': ['STRING', {'default': ''}]}},
+        'output': [], 'output_name': [], 'name': 'ImpactLogger', 'display_name': 'Logger (Impact)',
+        'category': 'ImpactPack/Debug', 'output_node': True, 'python_module': 'custom_nodes.comfyui-impact-pack',
     },
 }
 
@@ -109,6 +128,7 @@ class FakeComfy:
         self.interrupts = []
         self.deleted = []
         self.history = {}
+        self.object_info_calls = 0
         self.pending = set()
         self.running = set()
         self.base_url = None
@@ -189,6 +209,7 @@ class FakeComfy:
 
     async def object_info(self, request):
         cls = request.match_info.get('cls')
+        self.object_info_calls += 1
         if cls is None:
             return web.json_response(OBJECT_INFO)
         return web.json_response({cls: OBJECT_INFO[cls]} if cls in OBJECT_INFO else {})
