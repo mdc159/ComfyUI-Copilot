@@ -1,6 +1,6 @@
 """Offline node index: Manager databases joined with /object_info, searchable without a network.
 
-Plain functions only in this PR; the ``@function_tool`` wrappers land with the agent wiring.
+Plain functions plus the ``@function_tool`` wrappers the agent calls.
 No ``server`` / ``nodes`` / ``execution`` / ``folder_paths`` imports at module scope.
 """
 import asyncio
@@ -16,8 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple
 
+from agents.tool import function_tool
+
 from ..utils.comfy_gateway import ComfyGateway, ComfyUnreachable
 from ..utils.logger import log
+from ._common import tool_json
 
 DEFAULT_CHANNEL = "https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main"
 DB_FILES = ("custom-node-list.json", "extension-node-map.json", "github-stats.json")
@@ -555,6 +558,7 @@ _lock: Optional[asyncio.Lock] = None
 _snapshot: Optional[Dict[str, Any]] = None
 _snapshot_at: float = 0.0
 _signature: Optional[Tuple] = None
+_first_build_logged: bool = False
 
 
 def _db_signature() -> Tuple:
@@ -581,17 +585,18 @@ def _get_lock() -> asyncio.Lock:
 
 
 def invalidate_index() -> None:
-    global _index, _lock, _snapshot, _snapshot_at, _signature
+    global _index, _lock, _snapshot, _snapshot_at, _signature, _first_build_logged
     _index = None
     _lock = None
     _snapshot = None
     _snapshot_at = 0.0
     _signature = None
+    _first_build_logged = False
 
 
 async def get_index(gateway: Optional[ComfyGateway] = None, *, force: bool = False) -> NodeIndex:
     """Cached index; rebuilt when forced, when the DB files change, or when the object_info snapshot expires."""
-    global _index, _snapshot, _snapshot_at, _signature
+    global _index, _snapshot, _snapshot_at, _signature, _first_build_logged
     async with _get_lock():
         now = time.time()
         signature = await asyncio.to_thread(_db_signature)
@@ -615,8 +620,13 @@ async def get_index(gateway: Optional[ComfyGateway] = None, *, force: bool = Fal
             started = time.monotonic()
             _index = await asyncio.to_thread(lambda: build_index(load_databases(), snapshot))
             _signature = signature
+            elapsed = time.monotonic() - started
             log.info(f"node index built: {len(_index.records)} records, {_index.installed_count} installed, "
-                     f"source={_index.db_source}, {time.monotonic() - started:.2f}s")
+                     f"source={_index.db_source}, {elapsed:.2f}s")
+            if not _first_build_logged:
+                _first_build_logged = True
+                log.info(f"node index: first build, source={_index.db_source}, "
+                         f"records={len(_index.records)}, {elapsed:.2f}s")
         return _index
 
 
@@ -734,3 +744,32 @@ async def node_rows_for_types(node_types: List[str]) -> List[dict]:
         record = index.get(str(node_type))
         rows.append(node_row(record) if record else _unknown_row(str(node_type)))
     return rows
+
+
+# -- agent tools -----------------------------------------------------------------------
+
+
+@function_tool
+async def search_node(query: str, limit: int = 8) -> str:
+    """Find ComfyUI nodes by what they do. `query`: 2-4 specific English words (e.g. "tiled vae decode",
+    "depth anything preprocessor"); returns installed and installable nodes with repo URL and stars."""
+    return tool_json(await search_nodes(query, limit))
+
+
+@function_tool
+async def get_node_info(node_class: str) -> str:
+    """Details for one node class: inputs/outputs when installed, otherwise which pack provides it and its repo URL."""
+    return tool_json(await node_info(node_class))
+
+
+@function_tool
+async def get_node_info_by_types(node_types: List[str]) -> str:
+    """For a list of class names, report which are installed and where the missing ones come from."""
+    rows = await node_rows_for_types(node_types)
+    missing = [row["name"] for row in rows if not row.get("installed")]
+    if rows:
+        answer = f"{len(rows) - len(missing)}/{len(rows)} requested node types are installed"
+    else:
+        answer = "no node types given"
+    return tool_json({"answer": answer, "data": rows, "missing": missing,
+                      "ext": [{"type": "node", "data": rows}]})
