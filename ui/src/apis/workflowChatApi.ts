@@ -389,7 +389,7 @@ export namespace WorkflowChatAPI {
 
 
     
-    const response = await fetch(`${BASE_URL}/api/chat/get_node_info_by_types`, {
+    const response = await fetch(`/api/copilot/node_info_by_types`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ 

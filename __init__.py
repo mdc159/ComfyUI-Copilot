@@ -48,6 +48,7 @@ from .backend.controller.conversation_api import *
 from .backend.controller.llm_api import *
 from .backend.controller.expert_api import *
 from .backend.controller.validate_api import *
+from .backend.controller.node_api import *
 
 WEB_DIRECTORY = "entry"
 NODE_CLASS_MAPPINGS = {}

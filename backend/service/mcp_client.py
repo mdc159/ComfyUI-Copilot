@@ -7,10 +7,12 @@ FilePath: /comfyui_copilot/backend/service/mcp-client.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
 from ..service.workflow_rewrite_tools import get_current_workflow
+from ..tools.node_index import search_node, get_node_info as node_info_tool, get_node_info_by_types
 from ..utils.globals import BACKEND_BASE_URL, get_comfyui_copilot_api_key, DISABLE_WORKFLOW_GEN
 from .. import core
 import asyncio
 from contextlib import AsyncExitStack
+import json
 import os
 import traceback
 from typing import List, Dict, Any, Optional
@@ -42,6 +44,43 @@ from ..utils.logger import log
 from openai.types.responses import ResponseTextDeltaEvent
 from openai import APIError, RateLimitError
 from pydantic import BaseModel
+
+
+_WORKFLOW_EXT_TYPES = ("workflow_update", "param_update")
+
+
+def _is_workflow_or_param_ext(ext_items: Any) -> bool:
+    """True when `ext_items` is a list containing a workflow_update/param_update entry -- the
+    shape the Workflow Rewrite tools use, handled by the dedicated branch in the stream parser."""
+    return isinstance(ext_items, list) and any(
+        isinstance(item, dict) and item.get("type") in _WORKFLOW_EXT_TYPES for item in ext_items
+    )
+
+
+def extract_tool_ext(tool_output_data: Any) -> Optional[Dict[str, Any]]:
+    """The `tool_results[...]` entry for a tool's parsed JSON output: either a local tool's own
+    top-level `{"answer", "data", "ext"}` envelope (e.g. search_node, get_node_info,
+    get_node_info_by_types), or a remote MCP tool's legacy `{"text": "<json>"}` envelope.
+
+    Returns None when neither shape applies -- in particular when `ext` is a
+    workflow_update/param_update envelope, which the caller's dedicated branch handles first so
+    this helper never swallows it.
+    """
+    if not isinstance(tool_output_data, dict):
+        return None
+    ext = tool_output_data.get("ext")
+    if ext and not _is_workflow_or_param_ext(ext):
+        return {"answer": tool_output_data.get("answer"), "data": tool_output_data.get("data"),
+                "ext": ext, "content_dict": tool_output_data}
+    text = tool_output_data.get("text")
+    if text:
+        parsed_output = json.loads(text)   # malformed JSON propagates to the caller's except block
+        if isinstance(parsed_output, dict):
+            return {"answer": parsed_output.get("answer"), "data": parsed_output.get("data"),
+                    "ext": parsed_output.get("ext"), "content_dict": parsed_output}
+        data = parsed_output if isinstance(parsed_output, list) else None
+        return {"answer": None, "data": data, "ext": None, "content_dict": parsed_output}
+    return None
 
 
 class ImageData:
@@ -225,6 +264,34 @@ IF the user wants to find or generate a NEW workflow from scratch.
 - [Critical!] When the user's intent is to get workflows or generate images with specific requirements, you MUST ALWAYS call BOTH recall_workflow tool AND gen_workflow tool to provide comprehensive workflow options. Never call just one of these tools - both are required for complete workflow assistance. First call recall_workflow to find existing similar workflows, then call gen_workflow to generate new workflow options.
 """
 
+            node_case_instruction = """
+**CASE 4: NODE SEARCH / NODE INFO**
+IF the user wants to:
+- Find a node that does something (e.g. "which node does X", "is there a node for...", "find nodes for...").
+- Learn about a specific node class (e.g. "what does node X do", "how do I install X").
+- Check a list of node class names against what's installed (e.g. "what am I missing").
+- Keywords: "which node", "is there a node", "find node(s)", "search node", "what does ... do", "how do I install", "am I missing".
+
+**ACTION:**
+- A description of what the node should do -> call `search_node` with a short 2-4 word query.
+- One specific node class name -> call `get_node_info` with that class name.
+- A list of node class names, or "what am I missing" -> call `get_node_info_by_types` with the list.
+- Present the results briefly in text; the UI card already renders the node details, so do not repeat every field.
+"""
+
+            # search_node's own fallback only makes sense to mention when a remote search tool (bing_search)
+            # is actually wired up; otherwise point the model at rephrasing instead of a nonexistent tool.
+            if server_list:
+                node_search_fallback_instruction = (
+                    "- If you cannot find the information needed to answer a query, consider using bing_search to obtain relevant information. "
+                    "For example, if search_node tool cannot find the node, you can use bing_search to obtain relevant information about those nodes or components.\n"
+                    "- If search_node tool cannot find the node, you MUST use bing_search to obtain relevant information about those nodes or components."
+                )
+            else:
+                node_search_fallback_instruction = (
+                    "- If `search_node` finds nothing, say so and suggest 2-3 alternative queries; do not invent node names."
+                )
+
             agent = create_agent(
                 name="ComfyUI-Copilot",
                 instructions=f"""You are a powerful AI assistant for designing image processing workflows, capable of automating problem-solving using tools and commands.
@@ -263,6 +330,7 @@ IF the user wants to:
 - Then, based on the returned workflow data, provide a detailed analysis or explanation to the user.
 
 {workflow_creation_instruction}
+{node_case_instruction}
 
 ### CONSTRAINT CHECKLIST
 You must adhere to the following constraints to complete the task:
@@ -284,8 +352,7 @@ You must adhere to the following constraints to complete the task:
 {workflow_constraint}
 - When the user's intent is to query, return the query result directly without attempting to assist the user in performing operations.
 - When the user's intent is to get prompts for image generation (like Stable Diffusion). Use specific descriptive language with proper weight modifiers (e.g., (word:1.2)), prefer English terms, and separate elements with commas. Include quality terms (high quality, detailed), style specifications (realistic, anime), lighting (cinematic, golden hour), and composition (wide shot, close up) as needed. When appropriate, include negative prompts to exclude unwanted elements. Return words divided by commas directly without any additional text.
-- If you cannot find the information needed to answer a query, consider using bing_search to obtain relevant information. For example, if search_node tool cannot find the node, you can use bing_search to obtain relevant information about those nodes or components.
-- If search_node tool cannot find the node, you MUST use bing_search to obtain relevant information about those nodes or components.
+{node_search_fallback_instruction}
 
 - **ERROR MESSAGE ANALYSIS** - When a user pastes specific error text/logs (containing terms like "Failed", "Error", "Traceback", or stack traces), prioritize providing troubleshooting help rather than invoking search tools. Follow these steps:
   1. Analyze the error to identify the root cause (error type, affected component, missing dependencies, etc.)
@@ -301,7 +368,7 @@ You must adhere to the following constraints to complete the task:
                 """,
                 mcp_servers=server_list,
                 handoffs=[handoff_rewrite],
-                tools=[get_current_workflow],
+                tools=[get_current_workflow, search_node, node_info_tool, get_node_info_by_types],
                 config=config
             )
 
@@ -403,9 +470,8 @@ You must adhere to the following constraints to complete the task:
                                     log.info(f"-- Warning: No tool call in queue for output")
                                 
                                 try:
-                                    import json
                                     tool_output_data = json.loads(tool_output_data_str)
-                                    if "ext" in tool_output_data and tool_output_data["ext"]:
+                                    if "ext" in tool_output_data and tool_output_data["ext"] and _is_workflow_or_param_ext(tool_output_data["ext"]):
                                         # Store all ext items from tool output, not just workflow_update
                                         tool_ext_items = tool_output_data["ext"]
                                         for ext_item in tool_ext_items:
@@ -413,21 +479,24 @@ You must adhere to the following constraints to complete the task:
                                                 workflow_update_ext = tool_ext_items  # Store all ext items, not just one
                                                 log.info(f"-- Captured workflow tool ext from tool output: {len(tool_ext_items)} items")
                                                 break
-                                        
-                                    if "text" in tool_output_data and tool_output_data.get('text'):
-                                        parsed_output = json.loads(tool_output_data['text'])
-                                        
-                                        # Handle case where parsed_output might be a list instead of dict
-                                        if isinstance(parsed_output, dict):
-                                            answer = parsed_output.get("answer")
-                                            data = parsed_output.get("data")
-                                            tool_ext = parsed_output.get("ext")
-                                        else:
-                                            # If it's a list or other type, handle gracefully
-                                            answer = None
-                                            data = parsed_output if isinstance(parsed_output, list) else None
-                                            tool_ext = None
-                                        
+
+                                    elif "ext" in tool_output_data and tool_output_data["ext"]:
+                                        # Local tools (search_node, get_node_info, get_node_info_by_types, ...)
+                                        # return their own top-level {"answer", "data", "ext"} envelope directly.
+                                        extracted = extract_tool_ext(tool_output_data)
+                                        if extracted is not None:
+                                            tool_results[tool_name] = extracted
+                                            log.info(f"-- Stored result for tool '{tool_name}': "
+                                                     f"data={len(extracted['data']) if extracted['data'] else 0}, ext={extracted['ext']}")
+
+                                    elif "text" in tool_output_data and tool_output_data.get('text'):
+                                        # Remote MCP tools wrap their JSON payload as a "text" string.
+                                        extracted = extract_tool_ext(tool_output_data)
+                                        answer = extracted["answer"] if extracted else None
+                                        data = extracted["data"] if extracted else None
+                                        tool_ext = extracted["ext"] if extracted else None
+                                        parsed_output = extracted["content_dict"] if extracted else None
+
                                         # Store tool results similar to reference facade.py
                                         tool_results[tool_name] = {
                                             "answer": answer,
@@ -436,13 +505,13 @@ You must adhere to the following constraints to complete the task:
                                             "content_dict": parsed_output
                                         }
                                         log.info(f"-- Stored result for tool '{tool_name}': data={len(data) if data else 0}, ext={tool_ext}")
-                                        
+
                                         # Track workflow tools that produced results
                                         if tool_name in ["recall_workflow", "gen_workflow"]:
                                             log.info(f"-- Workflow tool '{tool_name}' produced result with data: {len(data) if data else 0}")
-                                        
-                                        
-                                        
+
+
+
                                 except (json.JSONDecodeError, TypeError) as e:
                                     # If not JSON or parsing fails, treat as regular text
                                     log.error(f"-- Failed to parse tool output as JSON: {e}")
@@ -650,13 +719,35 @@ You must adhere to the following constraints to complete the task:
                     # Only gen_workflow called, finished = True
                     finished = True
             else:
-                # No workflow tools called, check if other tools or message output returned ext
+                # No workflow tools called, check if other tools or message output returned ext.
+                # Non-"node" ext types keep the original first-truthy selection; "node" ext rows
+                # from every tool that produced one are merged into a single entry (dedup by name)
+                # so e.g. search_node and get_node_info_by_types results can both surface.
+                first_ext = None
+                node_rows_by_name: Dict[str, Any] = {}
                 for tool_name, result in tool_results.items():
-                    if result["ext"]:
-                        ext = result["ext"]
+                    tool_ext = result["ext"]
+                    if not tool_ext:
+                        continue
+                    if first_ext is None:
+                        first_ext = tool_ext
                         log.info(f"Using ext from {tool_name}")
-                        break
-                
+                    for item in tool_ext:
+                        if isinstance(item, dict) and item.get("type") == "node":
+                            for row in item.get("data") or []:
+                                name = row.get("name") if isinstance(row, dict) else None
+                                if name is not None and name not in node_rows_by_name:
+                                    node_rows_by_name[name] = row
+
+                if node_rows_by_name:
+                    merged_node_ext = {"type": "node", "data": list(node_rows_by_name.values())}
+                    other_items = [item for item in (first_ext or [])
+                                   if not (isinstance(item, dict) and item.get("type") == "node")]
+                    ext = [merged_node_ext] + other_items
+                    log.info(f"Merged {len(node_rows_by_name)} node ext rows across tool results")
+                else:
+                    ext = first_ext
+
                 # When no workflow tools are called (e.g., handoff to workflow_rewrite_agent)
                 # The agent stream has completed at this point, so finished should be True
                 # The workflow_update_ext will be included in final_ext regardless
