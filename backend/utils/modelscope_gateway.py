@@ -13,7 +13,6 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from .logger import log
-import folder_paths
 
 
 class ModelScopeGateway:
@@ -244,6 +243,7 @@ class ModelScopeGateway:
             raise RuntimeError("缺少依赖 modelscope，请先安装：pip install modelscope") from e
 
         # Determine destination directory in ComfyUI models folder hierarchy
+        import folder_paths  # ComfyUI module; imported here so the package loads outside ComfyUI
         try:
             if dest_dir:
                 cache_dir = os.path.abspath(os.path.expanduser(dest_dir))
