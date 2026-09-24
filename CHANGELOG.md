@@ -7,6 +7,23 @@ see [decisions/2026-09-24-fork-is-canonical.md](decisions/2026-09-24-fork-is-can
 Format: newest first. Each release lists what changed, how it was verified, and
 where it was deployed. Versions follow `pyproject.toml`; tags are `vX.Y.Z`.
 
+## Unreleased
+
+### Added
+- Offline node index built from ComfyUI-Manager's node database (PR #9): a local
+  join of the Manager's ~41,000 node classes across ~6,000 packs with the live
+  list of installed nodes, supporting ranked keyword search. When Manager's
+  database files exist on disk, searches run without network access; otherwise
+  the database is fetched and cached for one week. The index builds once per
+  process (2–15 seconds) and answers searches in ~5–30 ms. Not yet wired to
+  chat (that work is the next PR).
+
+### Verified
+- 68 tests pass on main at commit 2893dc5.
+
+### Deployed
+- Not yet.
+
 ## 2.2.0 — 2026-09-24
 
 Roadmap phases 0 (Foundation) and 1 (Debugger sees real execution). Phase 0
