@@ -7,14 +7,37 @@ see [decisions/2026-09-24-fork-is-canonical.md](decisions/2026-09-24-fork-is-can
 Format: newest first. Each release lists what changed, how it was verified, and
 where it was deployed. Versions follow `pyproject.toml`; tags are `vX.Y.Z`.
 
-## Unreleased
+## 2.2.0 — 2026-09-24
 
-Roadmap phase 0 (Foundation), the groundwork for rebuilding the features that
-were lost with the upstream hosted server. See `ROADMAP.md` and
-`docs/design/phase-0-1-debugger.md`. Nothing in this section changes what the
-user sees yet.
+Roadmap phases 0 (Foundation) and 1 (Debugger sees real execution). Phase 0
+is the groundwork for rebuilding the features that were lost with the
+upstream hosted server; phase 1 is the first change the user sees: the debug
+agent now runs the workflow for real and reads back what actually failed. See
+`ROADMAP.md` and `docs/design/phase-0-1-debugger.md`.
 
 ### Changed
+- The debugger now sees real execution (PRs #6, #7). Until now its
+  `run_workflow` tool posted the workflow to ComfyUI's `/api/prompt`, which
+  validates the graph and then queues a real run. The agent read the
+  validation reply, reported the workflow fixed, and exited, while the run
+  that followed failed on the GPU with an error the agent never saw. It now
+  works in two steps. First it validates without touching the GPU
+  (`mode="validate"`, through a new `/api/copilot/validate` route that checks
+  the graph without queueing anything). When validation passes it runs the
+  workflow for real (`mode="execute"`), waits for the run to finish, and reads
+  back the actual result: on failure, the failing node, the exception, and
+  the last 15 lines of the traceback; on success, the outputs. Runs that time
+  out are cancelled and reported as such.
+- "Fixed" is only reported after a real run has succeeded (PR #7). If the
+  agent cannot get there, because the fix needs the user (a model download,
+  an input image, a launch flag) or because four real runs have not
+  succeeded, it reports a limitation with exact next steps instead, for
+  example the line to change in `run_nvidia_gpu.bat` to add `--lowvram`. The
+  debug summary carries the outcome (`executed`, `limitation`, or
+  `unresolved`) and the list of runs.
+- `update_workflow_parameter` now parses numbers and booleans (PR #7): a
+  value of `"512"` is stored as the integer 512 and `"false"` as a boolean,
+  where before both were stored as text.
 - Chat and debug runs on the same model connection no longer wait for each
   other (PR #3). The per-connection lock used to be held for the whole model
   call; it is now held only while credentials are read, the provider process
@@ -33,6 +56,27 @@ user sees yet.
   ComfyUI.
 
 ### Added
+- Runtime Error Agent (PR #7): a debug specialist for out-of-memory, dtype,
+  and shape failures. It applies an 8 GB-VRAM playbook, cheapest change
+  first: batch size to 1; resolution caps (at most 1024x1024 for SDXL and
+  Flux, 768x768 for video); tiled VAE decode (`VAEDecode` ->
+  `VAEDecodeTiled`); fp8 or GGUF weights when a matching model file or loader
+  node is installed. It explains the quality trade-off of each change. For
+  dtype errors (such as `cutlass_fp16_linear: K mismatch`) it looks for a
+  mismatched model family or text encoder and fixes the loader setting; if
+  the only fix is a different model file, or a `--lowvram` launch flag, it
+  reports a limitation rather than pretending.
+- `replace_node_class` tool (PR #7): swaps a node for another node type,
+  keeping the links and values the new type accepts and dropping the rest.
+- `run_workflow` tool with `mode="validate"` / `mode="execute"`,
+  `get_system_stats` tool (ComfyUI version, launch arguments, VRAM per
+  device), and the `/api/copilot/validate` route (PR #6);
+  `report_limitation` tool and runtime error classification
+  (`backend/tools/runtime_errors.py`) (PR #7).
+- Tests `tests/test_run_workflow.py` (16 tests against the fake ComfyUI:
+  validation failure, runtime failure, success, timeout, cancellation) and
+  `tests/test_debug_support.py` (14 tests: error classification, node class
+  replacement, parameter parsing, outcome rules) (PRs #6, #7).
 - Gateway methods `validate_prompt`, `get_system_stats`, `cancel_prompt`, and
   `wait_for_prompt`, plus `ComfyUnreachable`, `PromptTimeout`, and
   `PromptLost` exceptions (PR #4). These let the phase 1 debugger watch a
@@ -47,14 +91,14 @@ user sees yet.
   `cancel_prompt`, and `validate_prompt` (PR #4).
 
 ### Verified
-- `python_embeded\python.exe -m unittest discover -s tests`: 28 tests pass
-  on `main` at d8fc95d.
+- `python_embeded\python.exe -m unittest discover -s tests`: 58 tests pass
+  on `main` at 3166571 (28 after phase 0, 30 more from PRs #6 and #7).
 - Developer note: a fresh worktree needs `npm ci` in `llm-runtime/` before
   the `test_llm_service` tests can start the Node provider process (see
   `LLM-CONNECTIONS.md`).
 
 ### Deployed
-- Not yet.
+- `D:\ComfyUI_windows_portable` on 2026-09-24.
 
 ## 2.1.1 — 2026-09-24
 
@@ -109,9 +153,8 @@ user sees yet.
   `copilot-backups\ComfyUI-Copilot-20260920-145132-complete`.
 
 ## Known issues
-- Model calls on one connection run one at a time. The workflow model uses
-  the chat connection by default, so concurrent chat and debug runs wait for
-  each other.
+- The debugger's execute mode queues a real run; on the 4070 expect each
+  debug cycle to take as long as the workflow itself.
 - The chat endpoints are not restricted to local requests. Do not start
   ComfyUI with `--listen` on an untrusted network; others could use the
   configured subscription.
