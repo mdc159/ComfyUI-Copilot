@@ -214,6 +214,11 @@ class ModelService:
         # Poll without parking a thread that could acquire a lock after cancellation.
         while not guard.acquire(blocking=False):
             await asyncio.sleep(0.05)
+        # Held through the auth phase only: credential read, spawn, and any refresh. Login keeps it
+        # for the whole process. Accepted race: a provider that refreshed mid-stream could race a
+        # second stream started with the pre-refresh token; provider.mjs emits every refresh before
+        # any model output, so with the current runtime this cannot occur.
+        held = True
         process = None
         stderr_task = None
         try:
@@ -238,13 +243,17 @@ class ModelService:
                     break
                 event = json.loads(line)
                 if event['type'] == 'credential':
-                    self.credentials.write(connection_id, event['value'])
-                elif event['type'] == 'error':
+                    with self.lock:
+                        self.credentials.write(connection_id, event['value'])
+                    continue
+                if held and signin is None:
+                    guard.release()
+                    held = False
+                if event['type'] == 'error':
                     raise ValueError(event['message'])
-                else:
-                    if event['type'] == 'result':
-                        result_seen = True
-                    yield event
+                if event['type'] == 'result':
+                    result_seen = True
+                yield event
             if not result_seen:
                 await process.wait()
                 try:
@@ -260,7 +269,8 @@ class ModelService:
                 await process.wait()
             if stderr_task and not stderr_task.done():
                 stderr_task.cancel()
-            guard.release()
+            if held:
+                guard.release()
 
     async def call(self, connection_id, payload):
         result = None

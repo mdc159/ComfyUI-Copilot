@@ -223,6 +223,51 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('fixture-private-key-not-real', output)
         self.assertFalse(self.service.connection_lock('openai').locked())
 
+    async def test_concurrent_completions_on_one_connection(self):
+        self.service.save_connection({'id': 'openai', 'api_key': 'fixture-private-key-not-real'})
+        fixture = Path(self.directory.name) / 'slow.mjs'
+        fixture.write_text('''process.stdin.once('data', () => {
+          console.log(JSON.stringify({type:'delta',value:'x'}));
+          setTimeout(() => { console.log(JSON.stringify({type:'result',value:'done'})); process.exit(0); }, 600);
+        });''')
+        payload = {'action': 'complete', 'model': 'm', 'messages': []}
+        with patch('backend.llm.service.RUNTIME', fixture):
+            started = asyncio.get_running_loop().time()
+            results = await asyncio.gather(self.service.call('openai', payload), self.service.call('openai', payload))
+            elapsed = asyncio.get_running_loop().time() - started
+        self.assertEqual(results, ['done', 'done'])
+        # Serialized streams would take at least 1.2 s; the lock is released once output begins.
+        self.assertLess(elapsed, 1.2)
+        self.assertFalse(self.service.connection_lock('openai').locked())
+
+    async def test_auth_phase_is_serialized(self):
+        self.service.save_connection({'id': 'openai', 'api_key': 'fixture-private-key-not-real'})
+        fixture = Path(self.directory.name) / 'refresh-slow.mjs'
+        fixture.write_text('''process.stdin.once('data', d => {
+          const r = JSON.parse(d);
+          setTimeout(() => {
+            console.log(JSON.stringify({type:'credential',value:{type:'api_key',key:'refreshed-' + r.model}}));
+            console.log(JSON.stringify({type:'result',value:r.model}));
+            process.exit(0);
+          }, 300);
+        });''')
+        written = []
+        original = self.service.credentials.write
+        def record(connection_id, value):
+            written.append(value['key'])
+            original(connection_id, value)
+        with patch('backend.llm.service.RUNTIME', fixture), patch.object(self.service.credentials, 'write', record):
+            started = asyncio.get_running_loop().time()
+            results = await asyncio.gather(
+                self.service.call('openai', {'action': 'complete', 'model': 'first', 'messages': []}),
+                self.service.call('openai', {'action': 'complete', 'model': 'second', 'messages': []}))
+            elapsed = asyncio.get_running_loop().time() - started
+        self.assertEqual(results, ['first', 'second'])
+        self.assertGreaterEqual(elapsed, 0.6)
+        self.assertEqual(written, ['refreshed-first', 'refreshed-second'])
+        self.assertEqual(self.service.credentials.read('openai')['key'], 'refreshed-second')
+        self.assertFalse(self.service.connection_lock('openai').locked())
+
 
 class RouteTests(unittest.TestCase):
     def test_local_csrf_boundary(self):
