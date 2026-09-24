@@ -17,9 +17,17 @@ where it was deployed. Versions follow `pyproject.toml`; tags are `vX.Y.Z`.
   the database is fetched and cached for one week. The index builds once per
   process (2–15 seconds) and answers searches in ~5–30 ms. Not yet wired to
   chat (that work is the next PR).
+- Chat agent node discovery tools (PR #12): the chat agent can now recommend
+  nodes ("which node does X"), describe any node class ("what does node X do"),
+  and validate a list of node classes against what's installed, all from the
+  local node index with no upstream server call. A new `/api/copilot/node_info_by_types`
+  route replaces the dead upstream call that the "Accept workflow" flow used for
+  the missing-node install guide; the built frontend was rebuilt so it no longer
+  calls the upstream host for that guidance. When the ModelScope web-search tool
+  is off, the agent is told to say it found nothing rather than invent node names.
 
 ### Verified
-- 68 tests pass on main at commit 2893dc5.
+- 78 tests pass on main at 43e6f73.
 
 ### Deployed
 - Not yet.
