@@ -1,6 +1,12 @@
 '''
 Debug Agent for ComfyUI Workflow Error Analysis
 '''
+import json
+import uuid
+from typing import Any, Dict
+
+from agents.tool import function_tool
+
 from ..utils.key_utils import workflow_config_adapt
 from ..agent_factory import create_agent
 from agents.items import ItemHelpers
@@ -13,46 +19,8 @@ from ..service.parameter_tools import *
 from ..service.link_agent_tools import *
 from ..dao.workflow_table import get_workflow_data, save_workflow_data
 from ..utils.request_context import get_session_id, get_config
-
-# Import ComfyUI internal modules
-import uuid
+from ..tools.run_workflow import run_workflow
 from ..utils.logger import log
-# Load environment variables from server.env
-
-
-@function_tool
-async def run_workflow() -> str:
-    """验证当前session的工作流并返回结果"""
-    try:
-        session_id = get_session_id()
-        if not session_id:
-            return json.dumps({"error": "No session_id found in context"})
-            
-        workflow_data = get_workflow_data(session_id)
-        if not workflow_data:
-            return json.dumps({"error": "No workflow data found for this session"})
-        
-        log.info(f"Run workflow for session {session_id}")
-        
-        # 使用 ComfyGateway 调用 server.py 的 post_prompt 逻辑
-        from ..utils.comfy_gateway import ComfyGateway
-        
-        # 简化方法：直接使用 requests 同步调用
-        gateway = ComfyGateway()
-
-        # 准备请求数据格式（与server.py post_prompt接口一致）
-        request_data = {
-            "prompt": workflow_data,
-            "client_id": f"debug_agent_{session_id}"
-        }
-        
-        result = await gateway.run_prompt(request_data)
-        log.info(result)
-        
-        return json.dumps(result)
-        
-    except Exception as e:
-        return json.dumps({"error": f"Failed to run workflow: {str(e)}"})
 
 
 @function_tool
@@ -193,8 +161,8 @@ async def debug_workflow_errors(workflow_data: Dict[str, Any]):
     """
     Analyze and debug workflow errors using multi-agent architecture.
     
-    This function validates ComfyUI workflows using internal functions instead of HTTP requests
-    to avoid blocking issues. It coordinates with specialized agents to fix different types of errors.
+    The coordinator validates the workflow, then executes it on the ComfyUI target once
+    validation passes, and hands each kind of error to a specialist agent.
     
     Args:
         workflow_data: Current workflow data from app.graphToPrompt()
@@ -225,31 +193,32 @@ async def debug_workflow_errors(workflow_data: Dict[str, Any]):
             instructions=f"""You are a ComfyUI workflow debugging coordinator. Your role is to analyze workflow errors and coordinate with specialized agents to fix them.
 
 **Your Process:**
-1. **Validate the workflow**: Use run_workflow() to validate the workflow and capture any errors
-2. **Analyze errors**: If errors occur, use analyze_error_type() to determine the error type and hand off to the appropriate specialist. Note that analyze_error_type can help you determine the error type and which agent to hand off to, but it's only for reference. You still need to judge based on the current error information to determine which type of error it is:
+1. **Validate the workflow**: Use run_workflow(mode="validate") to run ComfyUI's structural check (nothing is queued, no GPU use). If it returns status "unsupported", go straight to step 3: execution is the only check available on this target.
+2. **Analyze validation errors**: On status "validation_failed", use analyze_error_type() on the result to determine the error type and hand off to the appropriate specialist. analyze_error_type is only a reference; judge from the actual node_errors which specialist fits:
    - Hand off to Link Agent for connection-related errors (missing connections, disconnected inputs, node linking issues)
    - Hand off to Parameter Agent for parameter-related errors (value_not_in_list, missing models, invalid values)
    - Hand off to Workflow Bugfix Default Agent for other structural issues (node compatibility, complex workflow restructuring)
-3. **After specialist returns**: Continue validation from step 1 to check if the issue is resolved
-4. **Repeat until complete**: Continue this cycle until there are no errors or maximum 10 iterations
+   After the specialist returns, re-validate (step 1).
+3. **Execute when validation passes**: Once status is "valid", call run_workflow(mode="execute"). Tell the user before calling it: this queues a real run on their GPU and waits for it to finish.
+4. **Analyze runtime errors**: On status "execution_error", the result carries execution_error with node_id, node_type, exception_type, exception_message and traceback_tail. Use analyze_error_type() on it, then hand off to the Workflow Bugfix Default Agent with the node id, node type and exception message (runtime errors such as out-of-memory, dtype or shape mismatches usually need a parameter or node change on that node). After the specialist returns, go back to step 1.
+   - Status "timeout", "cancelled" or "unreachable" means the run did not finish; report it to the user and stop.
+5. **Complete only after a successful execution**: Report success ONLY when run_workflow(mode="execute") returned status "success". Report what was changed, elapsed_seconds and the outputs. Never say the workflow is fixed after validation alone.
+6. **Repeat until complete**: Continue this cycle until an execute run succeeds or a maximum of 10 iterations.
 
 **Critical Guidelines:**
 - ALWAYS validate the workflow first to check for errors
-- If no errors occur, report success immediately and STOP
 - If errors occur, analyze them and hand off to the appropriate specialist
 - When specialists return: IMMEDIATELY re-validate the workflow to check if the issue is resolved
-- Continue the debugging cycle until all errors are fixed or max iterations reached
+- Continue the debugging cycle until an execute run succeeds or max iterations reached
 - Provide clear, streaming updates about what you're doing
 - Be concise but informative in your responses
 - If there is user history in history_messages, please determine the language based on the language in the history. Otherwise, use {get_language()} as the language.
 
 **Handoff Strategy:**
 - Hand off errors to specialists for fixing
-- When they return: Re-validate immediately to check results  
+- When they return: Re-validate immediately to check results
 - If new errors appear: Analyze and hand off again
 - If same errors persist: Try different specialist (Link Agent → Parameter Agent → Workflow Bugfix Default Agent) or report limitation
-
-**Note**: The workflow validation is done using ComfyUI's internal functions, not actual execution, so it's fast and safe.
 
 Start by validating the workflow to see its current state.""",
             model=WORKFLOW_MODEL_NAME,
@@ -507,7 +476,7 @@ Start by validating the workflow to see its current state.""",
         result = Runner.run_streamed(
             agent,
             input=messages,
-            max_turns=30,
+            max_turns=60,
         )
         log.info("=== Debug Coordinator starting ===")
         
