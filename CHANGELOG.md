@@ -30,8 +30,8 @@ where it was deployed. Versions follow `pyproject.toml`; tags are `vX.Y.Z`.
   list of installed nodes, supporting ranked keyword search. When Manager's
   database files exist on disk, searches run without network access; otherwise
   the database is fetched and cached for one week. The index builds once per
-  process (2–15 seconds) and answers searches in ~5–30 ms. Not yet wired to
-  chat (that work is the next PR).
+  process (2–15 seconds) and answers searches in ~5–30 ms. Chat integration
+  shipped in PR #12 below.
 - Chat agent node discovery tools (PR #12): the chat agent can now recommend
   nodes ("which node does X"), describe any node class ("what does node X do"),
   and validate a list of node classes against what's installed, all from the
@@ -42,9 +42,10 @@ where it was deployed. Versions follow `pyproject.toml`; tags are `vX.Y.Z`.
   is off, the agent is told to say it found nothing rather than invent node names.
 
 ### Verified
-- 82 tests pass on main at 17e0aa7; one timing-sensitive test
-  (`test_concurrent_completions_on_one_connection`) can fail on a loaded machine
-  and is being tightened.
+- All 82 tests pass with the portable Python. The concurrency regression test
+  now requires both provider streams to start before allowing either to finish,
+  instead of comparing elapsed time. It passed 10 consecutive runs and rejects
+  forced full-stream serialization. This maintenance change affects tests only.
 
 ### Deployed
 - `D:\ComfyUI_windows_portable` on 2026-09-24.

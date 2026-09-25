@@ -225,19 +225,67 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_completions_on_one_connection(self):
         self.service.save_connection({'id': 'openai', 'api_key': 'fixture-private-key-not-real'})
+        # Both providers must start before either is allowed to finish. Timeouts are
+        # deadlock guards, not assertions about how fast this machine runs Node.
+        signal_dir = Path(self.directory.name) / 'signals'
+        signal_dir.mkdir()
+        script = '''import fs from 'node:fs';
+const dir = DIR_PLACEHOLDER;
+process.stdin.once('data', () => {
+  console.log(JSON.stringify({type:'delta',value:'x'}));
+  let id = 1;
+  for (;;) {
+    try { fs.writeFileSync(dir + '/start-' + id, '', {flag:'wx'}); break; }
+    catch (e) { if (e.code !== 'EEXIST') throw e; id++; }
+  }
+  const release = dir + '/release-' + id;
+  const check = () => {
+    if (fs.existsSync(release)) {
+      console.log(JSON.stringify({type:'result', value:'done-' + id}));
+      process.exit(0);
+    } else {
+      setTimeout(check, 20);
+    }
+  };
+  check();
+});
+'''
         fixture = Path(self.directory.name) / 'slow.mjs'
-        fixture.write_text('''process.stdin.once('data', () => {
-          console.log(JSON.stringify({type:'delta',value:'x'}));
-          setTimeout(() => { console.log(JSON.stringify({type:'result',value:'done'})); process.exit(0); }, 600);
-        });''')
+        fixture.write_text(script.replace('DIR_PLACEHOLDER', json.dumps(str(signal_dir))))
         payload = {'action': 'complete', 'model': 'm', 'messages': []}
+
+        async def drive(gen):
+            first_event = await gen.__anext__()
+            result = None
+            async for event in gen:
+                if event['type'] == 'result':
+                    result = event['value']
+            return first_event, result
+
         with patch('backend.llm.service.RUNTIME', fixture):
-            started = asyncio.get_running_loop().time()
-            results = await asyncio.gather(self.service.call('openai', payload), self.service.call('openai', payload))
-            elapsed = asyncio.get_running_loop().time() - started
-        self.assertEqual(results, ['done', 'done'])
-        # Serialized streams would take at least 1.2 s; the lock is released once output begins.
-        self.assertLess(elapsed, 1.2)
+            gen1 = self.service.events('openai', payload)
+            gen2 = self.service.events('openai', payload)
+            tasks = [asyncio.create_task(drive(gen1)), asyncio.create_task(drive(gen2))]
+            async def both_started():
+                while len(list(signal_dir.glob('start-*'))) < 2:
+                    await asyncio.sleep(0.02)
+            try:
+                await asyncio.wait_for(both_started(), 30)
+                self.assertTrue(all(not task.done() for task in tasks))
+                self.assertEqual(list(signal_dir.glob('release-*')), [])
+                for start_file in signal_dir.glob('start-*'):
+                    (signal_dir / start_file.name.replace('start-', 'release-')).write_text('')
+                (first1, result1), (first2, result2) = await asyncio.wait_for(
+                    asyncio.gather(*tasks), 30)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await gen1.aclose()
+                await gen2.aclose()
+        self.assertEqual(first1['type'], 'delta')
+        self.assertEqual(first2['type'], 'delta')
+        self.assertEqual({result1, result2}, {'done-1', 'done-2'})
         self.assertFalse(self.service.connection_lock('openai').locked())
 
     async def test_auth_phase_is_serialized(self):
