@@ -21,7 +21,7 @@ import os
 import shutil
 
 from ..service.debug_agent import debug_workflow_errors
-from ..dao.workflow_table import save_workflow_data, get_workflow_data_by_id, update_workflow_ui_by_id
+from ..dao.workflow_table import save_workflow_data, get_workflow_data_by_id, update_workflow_ui_by_id, merge_workflow_attributes
 from ..service.mcp_client import comfyui_agent_invoke
 from ..utils.request_context import set_request_context, get_session_id
 from ..utils.logger import log
@@ -368,22 +368,28 @@ async def save_workflow_checkpoint(request):
     try:
         session_id = req_json.get('session_id')
         workflow_api = req_json.get('workflow_api')  # API format workflow
-        workflow_ui = req_json.get('workflow_ui')    # UI format workflow  
+        workflow_ui = req_json.get('workflow_ui')    # UI format workflow
         checkpoint_type = req_json.get('checkpoint_type', 'debug_start')  # debug_start, debug_complete, user_message_checkpoint
         message_id = req_json.get('message_id')      # User message ID for linking (optional)
-        
+        workflow_key = req_json.get('workflow_key')    # Which ComfyUI tab this checkpoint belongs to
+        workflow_hash = req_json.get('workflow_hash')  # Content hash of that tab's workflow
+
         if not session_id or not workflow_api:
             return web.json_response({
                 "success": False,
                 "message": "Missing required parameters: session_id and workflow_api"
             })
-        
+
         # Save workflow with checkpoint type in attributes
         attributes = {
             "checkpoint_type": checkpoint_type,
             "timestamp": time.time()
         }
-        
+        if workflow_key:
+            attributes["workflow_key"] = workflow_key
+        if workflow_hash:
+            attributes["workflow_hash"] = workflow_hash
+
         # Set description and additional attributes based on checkpoint type
         if checkpoint_type == "user_message_checkpoint" and message_id:
             attributes.update({
@@ -509,11 +515,15 @@ async def invoke_debug(request):
 
     session_id = req_json.get('session_id')
     workflow_data = req_json.get('workflow_data')
-    
+    workflow_key = req_json.get('workflow_key')    # Which ComfyUI tab this debug run targets
+    workflow_hash = req_json.get('workflow_hash')  # Content hash of that tab's workflow
+
     # Get configuration from headers (OpenAI settings)
     config = {
         "session_id": session_id,
         "model": "gemini-2.5-flash",  # Default model for debug agents
+        "workflow_key": workflow_key,
+        "workflow_hash": workflow_hash,
         **get_llm_config_from_headers(request),
     }
     # Apply .env-based defaults for LLM-related fields (config > .env > code defaults)
@@ -522,8 +532,9 @@ async def invoke_debug(request):
     # 获取当前语言
     language = request.headers.get('Accept-Language', 'en')
     set_language(language)
-    
-    # 设置请求上下文 - 为debug请求建立context隔离
+
+    # 设置请求上下文 - 为debug请求建立context隔离。checkpoint_id会在debug_workflow_errors里
+    # 保存本次运行的初始workflow后被pin住，这里先不设置checkpoint_id。
     set_request_context(session_id, None, config)
     
     log.info("Debug model configuration loaded")
@@ -623,15 +634,20 @@ async def invoke_debug(request):
         if workflow_data and accumulated_text:
             try:
                 current_session_id = get_session_id()
+                post_debug_attributes = {
+                    "checkpoint_type": "debug_complete",
+                    "description": "Workflow state after debug completion",
+                    "timestamp": time.time()
+                }
+                if workflow_key:
+                    post_debug_attributes["workflow_key"] = workflow_key
+                if workflow_hash:
+                    post_debug_attributes["workflow_hash"] = workflow_hash
                 checkpoint_id = save_workflow_data(
                     session_id=current_session_id,
                     workflow_data=workflow_data,
                     workflow_data_ui=None,  # UI format not available in debug agent
-                    attributes={
-                        "checkpoint_type": "debug_complete",
-                        "description": "Workflow state after debug completion",
-                        "timestamp": time.time()
-                    }
+                    attributes=post_debug_attributes
                 )
                 
                 # Add checkpoint info to ext data
@@ -689,13 +705,18 @@ async def update_workflow_ui(request):
     try:
         checkpoint_id = req_json.get('checkpoint_id')
         workflow_data_ui = req_json.get('workflow_data_ui')
-        
+        # workflow_key/workflow_hash identify which tab this UI snapshot came from. The row itself
+        # is addressed by checkpoint_id, so these aren't required to locate it; when present we
+        # fold them into the checkpoint's attributes for consistency with the other write paths.
+        workflow_key = req_json.get('workflow_key')
+        workflow_hash = req_json.get('workflow_hash')
+
         if not checkpoint_id or not workflow_data_ui:
             return web.json_response({
                 "success": False,
                 "message": "Missing required parameters: checkpoint_id and workflow_data_ui"
             })
-        
+
         try:
             checkpoint_id = int(checkpoint_id)
         except ValueError:
@@ -703,9 +724,17 @@ async def update_workflow_ui(request):
                 "success": False,
                 "message": "Invalid checkpoint_id format"
             })
-        
+
         # Update only the workflow_data_ui field
         success = update_workflow_ui_by_id(checkpoint_id, workflow_data_ui)
+        if success and (workflow_key or workflow_hash):
+            existing = get_workflow_data_by_id(checkpoint_id) or {}
+            merged_attributes = dict(existing.get('attributes') or {})
+            if workflow_key:
+                merged_attributes["workflow_key"] = workflow_key
+            if workflow_hash:
+                merged_attributes["workflow_hash"] = workflow_hash
+            merge_workflow_attributes(checkpoint_id, merged_attributes)
         
         if success:
             log.info(f"Successfully updated workflow_data_ui for checkpoint ID: {checkpoint_id}")

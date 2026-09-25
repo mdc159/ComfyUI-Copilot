@@ -21,16 +21,22 @@ except Exception:
     )
 from .workflow_rewrite_agent_simple import rewrite_workflow_simple
 
-from ..dao.workflow_table import get_workflow_data, save_workflow_data, get_workflow_data_ui, get_workflow_data_by_id
+from ..dao.workflow_table import (
+    get_workflow_data, save_workflow_data, get_workflow_data_ui, get_workflow_data_by_id,
+    get_latest_workflow_for_key,
+)
 from ..utils.comfy_gateway import get_object_info, get_object_info_by_class
-from ..utils.request_context import get_rewrite_context, get_session_id
+from ..utils.request_context import get_rewrite_context, get_session_id, get_config, set_workflow_checkpoint_id
 from ..utils.logger import log
 
 def get_workflow_data_from_config(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """获取工作流数据，优先使用checkpoint_id，如果没有则使用session_id"""
+    """获取工作流数据：优先使用pin住的checkpoint_id，其次按workflow_key找同session最新匹配版本，
+    最后才退化为该session的最新版本（跨tab不安全，仅用于没有workflow_key的旧消息）"""
+    config = config or {}
     workflow_checkpoint_id = config.get('workflow_checkpoint_id')
     session_id = config.get('session_id')
-    
+    workflow_key = config.get('workflow_key')
+
     if workflow_checkpoint_id:
         try:
             checkpoint_data = get_workflow_data_by_id(workflow_checkpoint_id)
@@ -38,17 +44,24 @@ def get_workflow_data_from_config(config: Dict[str, Any]) -> Optional[Dict[str, 
                 return checkpoint_data['workflow_data']
         except Exception as e:
             log.error(f"Failed to get workflow data from checkpoint {workflow_checkpoint_id}: {str(e)}")
-    
+
+    if workflow_key and session_id:
+        keyed_data = get_latest_workflow_for_key(session_id, workflow_key)
+        if keyed_data and keyed_data.get('workflow_data'):
+            return keyed_data['workflow_data']
+
     if session_id:
         return get_workflow_data(session_id)
-    
+
     return None
 
 def get_workflow_data_ui_from_config(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """获取工作流UI数据，优先使用checkpoint_id，如果没有则使用session_id"""
+    """获取工作流UI数据，解析规则同get_workflow_data_from_config"""
+    config = config or {}
     workflow_checkpoint_id = config.get('workflow_checkpoint_id')
     session_id = config.get('session_id')
-    
+    workflow_key = config.get('workflow_key')
+
     if workflow_checkpoint_id:
         try:
             checkpoint_data = get_workflow_data_by_id(workflow_checkpoint_id)
@@ -56,11 +69,40 @@ def get_workflow_data_ui_from_config(config: Dict[str, Any]) -> Optional[Dict[st
                 return checkpoint_data['workflow_data_ui']
         except Exception as e:
             log.error(f"Failed to get workflow UI data from checkpoint {workflow_checkpoint_id}: {str(e)}")
-    
+
+    if workflow_key and session_id:
+        keyed_data = get_latest_workflow_for_key(session_id, workflow_key)
+        if keyed_data and keyed_data.get('workflow_data_ui'):
+            return keyed_data['workflow_data_ui']
+
     if session_id:
         return get_workflow_data_ui(session_id)
-    
+
     return None
+
+def get_workflow_identity_from_config(config: Dict[str, Any]) -> "tuple[Optional[str], Optional[str]]":
+    """workflow_key/workflow_hash to propagate onto the next saved version.
+
+    Prefers the identity recorded on the pinned checkpoint (so a write always inherits the
+    identity of the version it modified), falling back to the request config directly.
+    """
+    config = config or {}
+    workflow_checkpoint_id = config.get('workflow_checkpoint_id')
+    if workflow_checkpoint_id:
+        try:
+            checkpoint_data = get_workflow_data_by_id(workflow_checkpoint_id)
+            attrs = (checkpoint_data or {}).get('attributes') or {}
+            if isinstance(attrs, dict) and attrs.get('workflow_key'):
+                return attrs.get('workflow_key'), attrs.get('workflow_hash')
+        except Exception as e:
+            log.error(f"Failed to get workflow identity from checkpoint {workflow_checkpoint_id}: {str(e)}")
+    return config.get('workflow_key'), config.get('workflow_hash')
+
+def repin_workflow_version(version_id: Optional[int]) -> None:
+    """After a tool writes a new version, pin the request context to it so later reads in the
+    same run (and the final checkpoint) see the agent's own edit instead of "latest for session"."""
+    if version_id:
+        set_workflow_checkpoint_id(version_id)
 
 @function_tool
 def get_current_workflow() -> str:
@@ -68,8 +110,8 @@ def get_current_workflow() -> str:
     session_id = get_session_id()
     if not session_id:
         return json.dumps({"error": "No session_id found in context"})
-    
-    workflow_data = get_workflow_data(session_id)
+
+    workflow_data = get_workflow_data_from_config(get_config() or {"session_id": session_id})
     if not workflow_data:
         return json.dumps({"error": "No workflow data found for this session"})
     
@@ -304,20 +346,28 @@ async def search_node_local(node_class: str = "", keywords: list[str] = None, li
 def save_checkpoint_before_modification(session_id: str, action_description: str) -> Optional[int]:
     """在修改工作流前保存checkpoint，返回checkpoint_id"""
     try:
-        current_workflow = get_workflow_data(session_id)
+        config = get_config() or {"session_id": session_id}
+        current_workflow = get_workflow_data_from_config(config)
         if not current_workflow:
             return None
-            
+
+        workflow_key, workflow_hash = get_workflow_identity_from_config(config)
+        attributes = {
+            "checkpoint_type": "workflow_rewrite_start",
+            "description": f"Checkpoint before {action_description}",
+            "action": "workflow_rewrite_checkpoint",
+            "timestamp": time.time()
+        }
+        if workflow_key:
+            attributes["workflow_key"] = workflow_key
+        if workflow_hash:
+            attributes["workflow_hash"] = workflow_hash
+
         checkpoint_id = save_workflow_data(
             session_id,
             current_workflow,
-            workflow_data_ui=get_workflow_data_ui(session_id),
-            attributes={
-                "checkpoint_type": "workflow_rewrite_start",
-                "description": f"Checkpoint before {action_description}",
-                "action": "workflow_rewrite_checkpoint",
-                "timestamp": time.time()
-            }
+            workflow_data_ui=get_workflow_data_ui_from_config(config),
+            attributes=attributes
         )
         log.info(f"Saved workflow rewrite checkpoint with ID: {checkpoint_id}")
         return checkpoint_id
@@ -356,21 +406,33 @@ async def update_workflow(workflow_data: str = "") -> str:
         log.info(f"[update_workflow] workflow_data: {workflow_data}")
         # 在修改前保存checkpoint
         checkpoint_id = save_checkpoint_before_modification(session_id, "workflow update")
-        
+
         # 解析JSON字符串
         workflow_dict = json.loads(workflow_data) if isinstance(workflow_data, str) else workflow_data
-        
+
+        config = get_config() or {"session_id": session_id}
+        workflow_key, workflow_hash = get_workflow_identity_from_config(config)
+        write_attributes = {"action": "workflow_rewrite", "description": "Workflow structure fixed by rewrite agent"}
+        if workflow_key:
+            write_attributes["workflow_key"] = workflow_key
+        if workflow_hash:
+            write_attributes["workflow_hash"] = workflow_hash
+
         version_id = save_workflow_data(
             session_id,
             workflow_dict,
-            attributes={"action": "workflow_rewrite", "description": "Workflow structure fixed by rewrite agent"}
+            attributes=write_attributes
         )
-        
+        # 让本次运行后续的读取都看到刚写入的版本，而不是session下的"最新"版本
+        repin_workflow_version(version_id)
+
         # 构建返回数据，包含checkpoint信息
         ext_data = [{
             "type": "workflow_update",
             "data": {
-                "workflow_data": workflow_dict
+                "workflow_data": workflow_dict,
+                "workflow_key": workflow_key,
+                "workflow_hash": workflow_hash
             }
         }]
         

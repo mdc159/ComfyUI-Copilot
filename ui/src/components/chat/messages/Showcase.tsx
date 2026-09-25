@@ -1,15 +1,18 @@
-import { useChatContext } from '../../../context/ChatContext';
 import useLanguage from '../../../hooks/useLanguage';
 import { generateUUID } from '../../../utils/uuid';
 import BeautifyCard from '../../ui/BeautifyCard';
 import StartLink from '../../ui/StartLink';
 import { BaseMessage } from './BaseMessage';
+import { Message } from '../../../types/types';
 
-interface IProps { 
+interface IProps {
   scrollRef?: React.RefObject<HTMLDivElement | null>;
+  // Same handler ChatInput's bug icon uses: adds a debug_guide message that offers to debug
+  // the current canvas (DebugGuide.tsx then does the real work when its own button is clicked).
+  onAddDebugMessage?: (message: Message) => void;
+  // Sends the chip's label as a real chat message, same as typing it into ChatInput.
+  onSendWithContent?: (content: string) => void;
 }
-
-const OFFSET = 2;
 
 const ICONS = [
   <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor"><path d="M149.333333 661.333333h213.333334v213.333334H149.333333zM753.066667 411.733333l-119.466667-119.466666c-8.533333-8.533333-8.533333-21.333333 0-29.866667l119.466667-119.466667c8.533333-8.533333 21.333333-8.533333 29.866666 0l119.466667 119.466667c8.533333 8.533333 8.533333 21.333333 0 29.866667l-119.466667 119.466666c-8.533333 8.533333-21.333333 8.533333-29.866666 0z" fill="currentColor" p-id="27396"></path><path d="M256 277.333333m-128 0a128 128 0 1 0 256 0 128 128 0 1 0-256 0Z" fill="currentColor" p-id="27397"></path><path d="M768 768m-128 0a128 128 0 1 0 256 0 128 128 0 1 0-256 0Z" fill="currentColor" p-id="27398"></path><path d="M234.666667 512h42.666666v106.666667h-42.666666z" fill="currentColor" p-id="27399"></path><path d="M256 448l-64 85.333333h128z" fill="currentColor" p-id="27400"></path><path d="M426.666667 256h106.666666v42.666667h-106.666666z" fill="currentColor" p-id="27401"></path><path d="M597.333333 277.333333l-85.333333-64v128z" fill="currentColor" p-id="27402"></path><path d="M746.666667 448h42.666666v106.666667h-42.666666z" fill="currentColor" p-id="27403"></path><path d="M768 618.666667l64-85.333334h-128z" fill="currentColor" p-id="27404"></path></svg>,
@@ -23,66 +26,35 @@ const ICONS = [
   <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor"><path d="M812.885333 302.08v227.370667a42.666667 42.666667 0 1 0 85.333334 0V302.08q0-74.197333-52.48-126.634667-52.48-52.48-126.634667-52.48H264.405333q-74.154667 0-126.634666 52.48Q85.333333 227.925333 85.333333 302.08v454.698667q0 74.197333 52.48 126.634666 52.394667 52.394667 126.506667 52.48h341.12a42.666667 42.666667 0 1 0 0-85.333333H372.053333l278.058667-261.76 38.954667 38.784a42.666667 42.666667 0 0 0 60.16-60.501333L681.045333 499.2a42.666667 42.666667 0 0 0-59.306666-0.853333L248.32 849.792Q170.666667 842.112 170.666667 756.778667V302.08q0-38.826667 27.477333-66.304 27.434667-27.434667 66.261333-27.434667h454.698667q93.781333 0 93.781333 93.738667z m-369.408 68.224q0-110.890667-110.848-110.890667-45.952 0-78.421333 32.469334-32.426667 32.469333-32.426667 78.421333 0 45.909333 32.426667 78.378667 32.469333 32.469333 78.421333 32.469333 45.909333 0 78.378667-32.469333 32.469333-32.469333 32.469333-78.378667z m-136.405333 0q0-25.557333 25.557333-25.557333 25.514667 0 25.514667 25.557333 0 25.514667-25.514667 25.514667-25.557333 0-25.557333-25.514667z m464.213333 427.221333q-14.890667 0-28.416-6.101333a42.666667 42.666667 0 0 0-56.405333 56.448q18.688 41.429333 56.917333 66.133333 38.186667 24.661333 83.669334 24.661334 63.914667 0 109.098666-45.226667Q981.333333 848.341333 981.333333 784.426667q0-45.482667-24.661333-83.669334-24.704-38.229333-66.133333-56.917333a42.666667 42.666667 0 0 0-56.448 56.405333q6.101333 13.525333 6.101333 28.373334 0 28.586667-20.181333 48.768t-48.768 20.181333z" p-id="22383" fill="currentColor"></path></svg>,
 ]
 
-const Showcase: React.FC<IProps> = ({ scrollRef }) => {
-  const { dispatch, showcasIng } = useChatContext();
-
+const Showcase: React.FC<IProps> = ({ scrollRef, onAddDebugMessage, onSendWithContent }) => {
   const {
     showcase_title,
     showcase_subtitle,
     showcase_list
   } = useLanguage()
-  
-  const doStreamString = (data: any, isUser: boolean = false, cb: () => void = () => {}) => {
-    let end = 0;
-    const messageId = generateUUID();
-    const func = (isFirst: boolean = false) => {
-      if (!showcasIng.current)
-        return;
-      end += OFFSET
-      const isString = typeof data === 'string';
-      const str = isString ? data : data?.text || '';
-      const message = isUser ? {
-        id: messageId,
-        role: "user",
-        content: str.slice(0, end)
-      } : {
-        id: messageId,
-        role: "ai",
-        content: (end > str.length && !!data?.ext) ? 
-          JSON.stringify({
-            text: str.slice(0, end),
-            ext: data?.ext,
-          }) : JSON.stringify({
-            text: str.slice(0, end)
-          }
-        ),
-        finished: end > str.length,
-        format:"markdown",
-        name: "Assistant"
-      }
-      const type = isFirst ? 'ADD_MESSAGE' : 'UPDATE_MESSAGE';
-      dispatch({ type, payload: message });
-      if (end <= str.length) {
-        setTimeout(() => {
-          func()
-        }, 10)
-      } else {
-        setTimeout(() => {
-          cb()
-        }, 500)
-      }
+
+  const handleChipClick = (item: { name: string; isDebug?: boolean }) => {
+    if (scrollRef?.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-    func(true)
-  }
 
-  const addQuestion = (question: string, cb: () => void) => {
-    dispatch({ type: 'SET_LOADING', payload: true });
-    doStreamString(question, true, cb);
-  }
+    if (item.isDebug) {
+      // Same message ChatInput's bug icon adds; DebugGuide.tsx does the real debugging work
+      // once its own "yes, debug it" button is clicked.
+      onAddDebugMessage?.({
+        id: generateUUID(),
+        role: 'ai',
+        content: JSON.stringify({
+          text: 'Would you like me to help you debug the current workflow on the canvas?',
+          ext: []
+        }),
+        format: 'debug_guide',
+        name: 'Assistant'
+      });
+      return;
+    }
 
-  const addAnswer = (data: any, cb: () => void) => {
-    dispatch({ type: 'SET_LOADING', payload: false });
-    doStreamString(data, false, cb);
+    onSendWithContent?.(item.name);
   }
 
   return <BaseMessage name='showcase'>
@@ -96,32 +68,11 @@ const Showcase: React.FC<IProps> = ({ scrollRef }) => {
         </StartLink>
       </div>
       {
-        showcase_list?.map((item, index) => <div 
+        showcase_list?.map((item, index) => <div
           key={index.toString()}
-          onClick={() => {
-            if (scrollRef?.current) {
-              scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-            }
-            showcasIng.current = true
-            const messages = item.messages || []
-            let index = 0;
-            const func = () => {
-              if (index < messages.length) {
-                const message = messages[index];
-                if (message.role === 'user') {
-                  addQuestion(message.content, func);
-                } else {
-                  addAnswer(JSON.parse(message.content || '{}') || '', func);
-                }
-                index++;
-              }
-            }
-
-            setTimeout(func, 100)
-            // func()
-          }}
+          onClick={() => handleChipClick(item)}
         >
-          <BeautifyCard 
+          <BeautifyCard
             className='min-h-[50px] flex flex-row items-center mt-4 px-4 py-2 rounded-full mx-[1px] my-[1px]'
             borderClassName='rounded-full'
           >
@@ -132,15 +83,6 @@ const Showcase: React.FC<IProps> = ({ scrollRef }) => {
               {item.name}
             </div>
           </BeautifyCard>
-          {/* <div className='relative min-h-[50px] flex flex-row items-center mt-4 beautify-card px-4 py-2 mx-[1px] my-[1px] rounded-full'>
-            <div className='card-border rounded-full'/>
-            <div className='text-[#4fabdb]'>
-              {ICONS[index]}
-            </div>
-            <div className='flex-1 text-sm text-[#fff]/70 font-normal ml-4'>
-              {item.name}
-            </div>
-          </div> */}
         </div>)
       }
     </div>

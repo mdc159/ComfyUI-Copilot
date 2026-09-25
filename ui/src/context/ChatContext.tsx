@@ -94,16 +94,14 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
 const ChatContext = createContext<{
   state: ChatState;
   dispatch: Dispatch<ChatAction>;
-  showcasIng: React.MutableRefObject<boolean>;
   abortControllerRef: React.RefObject<AbortController | null>;
   modelDownloadMap: Record<string, DownloadProgress>;
   addDownloadId: (id: string | string[]) => void;
-}>({ state: initialState, dispatch: () => null, showcasIng: {current: false}, abortControllerRef: {current: null}, modelDownloadMap: {}, addDownloadId: () => {} });
+}>({ state: initialState, dispatch: () => null, abortControllerRef: {current: null}, modelDownloadMap: {}, addDownloadId: () => {} });
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(chatReducer, initialState);
 
-  const showcasIng = useRef<boolean>(true);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [modelDownloadMap, setModelDownloadMap] = useState<Record<string, DownloadProgress>>({});
   const currentDownloadingId = useRef<string[]>([]);
@@ -210,7 +208,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
       }}
     >
-      <ChatContext.Provider value={{ state, dispatch, showcasIng, abortControllerRef, modelDownloadMap, addDownloadId }}>
+      <ChatContext.Provider value={{ state, dispatch, abortControllerRef, modelDownloadMap, addDownloadId }}>
         {children}
       </ChatContext.Provider>
     </ConfigProvider>

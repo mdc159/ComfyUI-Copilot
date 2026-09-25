@@ -172,7 +172,7 @@ const ParameterDebugTab = () => {
 // );
 
 export default function WorkflowChat({ onClose, visible = true, triggerUsage = false, onUsageTriggered }: WorkflowChatProps) {
-    const { state, dispatch, showcasIng, abortControllerRef } = useChatContext();
+    const { state, dispatch, abortControllerRef } = useChatContext();
     const { messages, installedNodes, loading, sessionId, selectedNode, activeTab } = state;
     const messageDivRef = useRef<HTMLDivElement>(null);
     const [input, setInput] = useState<string>('');
@@ -384,7 +384,6 @@ export default function WorkflowChat({ onClose, visible = true, triggerUsage = f
         if (messages?.[0]?.role === 'showcase') {
             dispatch({ type: 'CLEAR_MESSAGES' });
         }
-        showcasIng.current = false;
         dispatch({ type: 'SET_LOADING', payload: true });
         if ((input.trim() === "" && !selectedNode) || !sessionId) return;
         setLatestInput(input);
@@ -562,7 +561,6 @@ export default function WorkflowChat({ onClose, visible = true, triggerUsage = f
     }
 
     const handleClearMessages = () => {
-        showcasIng.current = false;
         dispatch({ type: 'CLEAR_MESSAGES' });
         // Remove old session data
         const oldSessionId = state.sessionId;
@@ -939,7 +937,7 @@ export default function WorkflowChat({ onClose, visible = true, triggerUsage = f
                     style={{ display: activeTab === 'chat' ? 'block' : 'none' }}
                     ref={messageDivRef}
                 > */}
-                    <MessageList 
+                    <MessageList
                         messages={messages}
                         latestInput={latestInput}
                         onOptionClick={handleOptionClick}
@@ -948,6 +946,8 @@ export default function WorkflowChat({ onClose, visible = true, triggerUsage = f
                         onUpdateMessage={handleUpdateMessage}
                         loading={loading}
                         isActive={activeTab === 'chat'}
+                        onAddDebugMessage={handleAddMessage}
+                        onSendWithContent={handleSendMessageWithContent}
                     />
                 {/* </div> */}
                 

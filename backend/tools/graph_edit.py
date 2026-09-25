@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from agents.tool import function_tool
 
 from ..utils.comfy_gateway import ComfyGateway
+from ..utils.request_context import get_config
 from ._common import session_workflow, tool_json
 
 
@@ -98,20 +99,34 @@ async def replace_node_class(node_id: str, new_class_type: str, inputs_json: str
             return tool_json(result)
 
         from ..dao.workflow_table import save_workflow_data
-        save_workflow_data(
+        from ..service.workflow_rewrite_tools import get_workflow_identity_from_config, repin_workflow_version
+        config = get_config() or {"session_id": session_id}
+        workflow_key, workflow_hash = get_workflow_identity_from_config(config)
+        write_attributes = {
+            "action": "replace_node_class",
+            "description": f"Replaced {result['changes']['old_class']} with {new_class_type} in node {node_id}",
+            "changes": result["changes"],
+        }
+        if workflow_key:
+            write_attributes["workflow_key"] = workflow_key
+        if workflow_hash:
+            write_attributes["workflow_hash"] = workflow_hash
+        version_id = save_workflow_data(
             session_id,
             result["workflow"],
             workflow_data_ui=None,
-            attributes={
-                "action": "replace_node_class",
-                "description": f"Replaced {result['changes']['old_class']} with {new_class_type} in node {node_id}",
-                "changes": result["changes"],
-            },
+            attributes=write_attributes,
         )
+        # Later reads in this run (and the final debug checkpoint) should see this edit.
+        repin_workflow_version(version_id)
         return tool_json({
             "success": True,
             "changes": result["changes"],
-            "ext": [{"type": "workflow_update", "data": {"workflow_data": result["workflow"]}}],
+            "ext": [{"type": "workflow_update", "data": {
+                "workflow_data": result["workflow"],
+                "workflow_key": workflow_key,
+                "workflow_hash": workflow_hash,
+            }}],
         })
     except Exception as e:
         return tool_json({"error": f"Failed to replace node class: {e}"})

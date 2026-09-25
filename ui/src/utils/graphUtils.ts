@@ -13,6 +13,55 @@ import LiteGraph from "../types/litegraph.d";
 import { app } from "./comfyapp";
 import { loadApiWorkflowWithMissingNodes } from "./comfyuiWorkflowApi2Ui";
 
+export interface WorkflowIdentity {
+    workflow_key: string;
+    workflow_hash: string;
+}
+
+/**
+ * FNV-1a 32-bit hash of a string, returned as an 8-char hex string.
+ * Used to detect whether a workflow's content changed even when its key (tab/path) didn't.
+ */
+function fnv1aHash(input: string): string {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < input.length; i++) {
+        hash ^= input.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Identifies which ComfyUI tab a workflow snapshot belongs to, so a running debug/rewrite
+ * session can be pinned to the tab it started on instead of "whatever tab is active now".
+ *
+ * Reads `app.extensionManager.workflow.activeWorkflow` (verified against the installed
+ * ComfyUI frontend bundle: `.key`, `.path`, `.filename` are present; `.id` is not). Falls back
+ * to `"default"` when the workflow store isn't available, so debug still works without
+ * cross-tab protection (older/embedded frontends).
+ */
+export function getActiveWorkflowIdentity(promptOutput?: any): WorkflowIdentity {
+    let workflowKey = 'default';
+    try {
+        const activeWorkflow = (app as any)?.extensionManager?.workflow?.activeWorkflow;
+        if (activeWorkflow) {
+            workflowKey = activeWorkflow.key || activeWorkflow.path || activeWorkflow.filename || 'default';
+        }
+    } catch (error) {
+        console.warn('[graphUtils] Failed to read active workflow identity:', error);
+    }
+
+    let workflowHash = '';
+    try {
+        const content = promptOutput !== undefined ? promptOutput : {};
+        workflowHash = fnv1aHash(JSON.stringify(content));
+    } catch (error) {
+        console.warn('[graphUtils] Failed to hash workflow content:', error);
+    }
+
+    return { workflow_key: workflowKey, workflow_hash: workflowHash };
+}
+
 export function addNodeOnGraph(type: string, options: any = {}) {
     const node = LiteGraph.createNode(type, "", options);
 

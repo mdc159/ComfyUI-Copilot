@@ -6,6 +6,7 @@ import { app } from '../../../utils/comfyapp';
 import { WorkflowChatAPI } from '../../../apis/workflowChatApi';
 import RestoreCheckpoint from '../../ui/RestoreCheckpoint';
 import { useChatContext } from '../../../context/ChatContext';
+import { getActiveWorkflowIdentity, WorkflowIdentity } from '../../../utils/graphUtils';
 
 interface DebugGuideProps {
     content: string;
@@ -54,7 +55,13 @@ export function DebugGuide({ content, name = 'Assistant', avatar, onAddMessage, 
 
     const handleDebugClick = async () => {
         if (isDebugging) return;
-        
+
+        // Computed once here, at click time, and threaded through the whole run: if the user
+        // switches ComfyUI tabs while the debug agent is still running, this run stays pinned
+        // to the workflow it started on.
+        const prompt = await app.graphToPrompt();
+        const workflowIdentity = getActiveWorkflowIdentity(prompt?.output);
+
         const messageId = generateUUID();
         const message = {
             id: messageId,
@@ -80,27 +87,28 @@ export function DebugGuide({ content, name = 'Assistant', avatar, onAddMessage, 
             });
 
             // Save checkpoint before debugging
-            await saveCheckpointBeforeDebug();
-            
+            await saveCheckpointBeforeDebug(workflowIdentity);
+
             dispatch({ type: 'SET_LOADING', payload: true });
-            
-            await handleQueueError(messageId);
+
+            await handleQueueError(messageId, workflowIdentity);
         } finally {
             setIsDebugging(false);
         }
     };
 
-    const saveCheckpointBeforeDebug = async () => {
+    const saveCheckpointBeforeDebug = async (workflowIdentity: WorkflowIdentity) => {
         try {
             const prompt = await app.graphToPrompt();
             const sessionId = localStorage.getItem("sessionId") || '';
-            
+
             if (sessionId && prompt) {
                 const checkpointData = await WorkflowChatAPI.saveWorkflowCheckpoint(
                     sessionId,
                     prompt.output, // API format
                     prompt.workflow, // UI format
-                    'debug_start'
+                    'debug_start',
+                    workflowIdentity
                 );
                 
                 setLocalCheckpointId(checkpointData.version_id);
@@ -145,11 +153,11 @@ export function DebugGuide({ content, name = 'Assistant', avatar, onAddMessage, 
         }
     };
 
-    const handleQueueError = async (messageId: string) => {
+    const handleQueueError = async (messageId: string, workflowIdentity: WorkflowIdentity) => {
         try {
             // Get current workflow for context
             const prompt = await app.graphToPrompt();
-            
+
             let accumulatedText = '';
             let finalExt: any = null;
 
@@ -159,7 +167,7 @@ export function DebugGuide({ content, name = 'Assistant', avatar, onAddMessage, 
             }
 
             // Use the streaming debug agent API
-            for await (const result of WorkflowChatAPI.streamDebugAgent(prompt, abortControllerRef?.current?.signal || undefined)) {
+            for await (const result of WorkflowChatAPI.streamDebugAgent(prompt, abortControllerRef?.current?.signal || undefined, workflowIdentity)) {
                 if (result.text) {
                     accumulatedText = result.text;
                     if (result.ext) {

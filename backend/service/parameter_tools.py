@@ -3,11 +3,14 @@ from typing import Any
 
 from agents.tool import function_tool
 from ..utils.modelscope_gateway import ModelScopeGateway
-from ..utils.request_context import get_session_id
+from ..utils.request_context import get_session_id, get_config
 
 from ..utils.comfy_gateway import get_object_info_by_class
 from ..dao.workflow_table import get_workflow_data, save_workflow_data
 from ..utils.logger import log
+from .workflow_rewrite_tools import (
+    get_workflow_data_from_config, get_workflow_identity_from_config, repin_workflow_version,
+)
 
 async def get_node_parameters(node_name: str, param_name: str = "") -> str:
     """获取节点的参数信息，如果param_name为空则返回所有参数"""
@@ -505,39 +508,49 @@ def update_workflow_parameter(node_id: str, param_name: str, new_value: str) -> 
             log.error("update_workflow_parameter: No session_id found in context")
             return json.dumps({"error": "No session_id found in context"})
         
-        # 获取当前工作流
-        workflow_data = get_workflow_data(session_id)
+        # 获取当前工作流（优先pin住的checkpoint / workflow_key，而不是session下的"最新"版本）
+        config = get_config() or {"session_id": session_id}
+        workflow_data = get_workflow_data_from_config(config)
         if not workflow_data:
             return json.dumps({"error": "No workflow data found for this session"})
-        
+
         # 检查节点是否存在
         if node_id not in workflow_data:
             return json.dumps({"error": f"Node {node_id} not found in workflow"})
-        
+
         # 更新参数
         if "inputs" not in workflow_data[node_id]:
             workflow_data[node_id]["inputs"] = {}
-        
+
         old_value = workflow_data[node_id]["inputs"].get(param_name, "not set")
         workflow_data[node_id]["inputs"][param_name] = new_value
-        
+
+        workflow_key, workflow_hash = get_workflow_identity_from_config(config)
+        write_attributes = {
+            "action": "parameter_update",
+            "description": f"Updated {param_name} in node {node_id}",
+            "changes": {
+                "node_id": node_id,
+                "parameter": param_name,
+                "old_value": old_value,
+                "new_value": new_value
+            }
+        }
+        if workflow_key:
+            write_attributes["workflow_key"] = workflow_key
+        if workflow_hash:
+            write_attributes["workflow_hash"] = workflow_hash
+
         # 保存更新的工作流到数据库
-        save_workflow_data(
+        version_id = save_workflow_data(
             session_id,
             workflow_data,
             workflow_data_ui=None,  # UI format not available here
-            attributes={
-                "action": "parameter_update", 
-                "description": f"Updated {param_name} in node {node_id}",
-                "changes": {
-                    "node_id": node_id,
-                    "parameter": param_name,
-                    "old_value": old_value,
-                    "new_value": new_value
-                }
-            }
+            attributes=write_attributes
         )
-        
+        # 让本次运行后续的读取都看到刚写入的版本
+        repin_workflow_version(version_id)
+
         return json.dumps({
             "success": True,
             "answer": f"Successfully updated {param_name} from '{old_value}' to '{new_value}' in node {node_id}",
@@ -551,6 +564,8 @@ def update_workflow_parameter(node_id: str, param_name: str, new_value: str) -> 
                 "type": "param_update",
                 "data": {
                     "workflow_data": workflow_data,
+                    "workflow_key": workflow_key,
+                    "workflow_hash": workflow_hash,
                     "changes": [{  # 包装成数组格式，与前端MessageList期望的格式匹配
                         "node_id": node_id,
                         "parameter": param_name,
