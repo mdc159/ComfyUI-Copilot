@@ -6,8 +6,8 @@ import { Message } from "../../types/types";
 import { LoadingMessage } from "./messages/LoadingMessage";
 import { generateUUID } from "../../utils/uuid";
 import { app } from "../../utils/comfyapp";
-import { addNodeOnGraph } from "../../utils/graphUtils";
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { addNodeOnGraph, getActiveWorkflowIdentity } from "../../utils/graphUtils";
+import { lazy, ReactNode, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Showcase from "./messages/Showcase";
 import { useChatContext } from "../../context/ChatContext";
 import { mergeByKeyCombine } from "../../utils/tools";
@@ -37,6 +37,10 @@ interface MessageListProps {
     onUpdateMessage: (message: Message) => void;
     loading?: boolean;
     isActive?: boolean;
+    // Passed through to the showcase chips: the debug chip reuses the same handler as
+    // ChatInput's bug icon, every other chip sends its label as a real chat message.
+    onAddDebugMessage?: (message: Message) => void;
+    onSendWithContent?: (content: string) => void;
 }
 
 const getAvatar = (name?: string) => {
@@ -56,7 +60,7 @@ const LazyDebugResult = lazy(() => import('./messages/DebugResult').then(m => ({
 // 默认显示3轮回答，也就是找到列表最后的3条role是ai的数据
 const DEFAULT_COUNT = 3;
 
-export function MessageList({ messages, latestInput, onOptionClick, installedNodes, onAddMessage, onUpdateMessage, loading, isActive }: MessageListProps) {
+export function MessageList({ messages, latestInput, onOptionClick, installedNodes, onAddMessage, onUpdateMessage, loading, isActive, onAddDebugMessage, onSendWithContent }: MessageListProps) {
     const [currentIndex, setCurrentIndex] = useState<number>(0)
     const [currentMessages, setCurrentMessages] = useState<Message[]>([])
     const scrollRef = useRef<HTMLDivElement>(null)
@@ -68,6 +72,10 @@ export function MessageList({ messages, latestInput, onOptionClick, installedNod
     const isLoadHistory = useRef<boolean>(false)
     // 用于跟踪已经处理过的工作流和参数更新，防止重复执行
     const processedUpdates = useRef<Set<string>>(new Set())
+    // workflow_update/param_update ext条目：当ext携带的workflow_key与当前激活的ComfyUI tab不一致时，
+    // 记录下待用户确认的Apply回调，而不是直接应用到画布（可能是别的tab的修改）。
+    // key: `${message.id}_workflow` 或 `${message.id}_param`
+    const [pendingWorkflowMismatches, setPendingWorkflowMismatches] = useState<Record<string, { workflowKey: string; apply: () => void }>>({})
     const showLoadMoreButton = useRef<boolean>(false)
     // 当消息列表发生重大变化时（如清除消息、切换会话），清空已处理的更新记录
     useEffect(() => {
@@ -238,7 +246,7 @@ export function MessageList({ messages, latestInput, onOptionClick, installedNod
         }
 
         if (message.role === 'showcase') {
-            return <Showcase key={'showcase'} scrollRef={scrollRef}/>
+            return <Showcase key={'showcase'} scrollRef={scrollRef} onAddDebugMessage={onAddDebugMessage} onSendWithContent={onSendWithContent}/>
         }
 
         if (message.role === 'ai' || message.role === 'tool') {
@@ -262,52 +270,97 @@ export function MessageList({ messages, latestInput, onOptionClick, installedNod
                 // 检查是否是工作流成功加载的消息
                 const isWorkflowSuccessMessage = response.text === 'The workflow has been successfully loaded to the canvas';
 
-                // 处理工作流更新：实时更新画布 
+                // 处理工作流更新：实时更新画布
+                let workflowMismatchBanner: ReactNode = null;
                 if (workflowUpdateExt && workflowUpdateExt.data) {
-                    const { workflow_data } = workflowUpdateExt.data;
+                    const { workflow_data, workflow_key: extWorkflowKey } = workflowUpdateExt.data;
                     if (typeof window !== 'undefined' && (window as any).app && workflow_data) {
                         // 使用更具体的key，包含workflow_data的hash以检测实际内容变化
                         const contentHash = JSON.stringify(workflow_data).slice(0, 100); // 简单的内容标识
                         const workflowUpdateKey = `workflow_update_${message.id}_${contentHash}`;
-                        
-                        if (!processedUpdates.current.has(workflowUpdateKey)) {
-                            const applyWorkflowWithRetry = async (retryCount = 0) => {
-                                try {
-                                    const { applyNewWorkflow } = await import('../../utils/graphUtils');
-                                    const success = applyNewWorkflow(workflow_data);
-                                    
-                                    if (success) {
-                                        console.log('[MessageList] Successfully applied workflow update');
-                                        // 标记该更新已处理（只有成功时才标记）
-                                        processedUpdates.current.add(workflowUpdateKey);
-                                    } else {
-                                        console.warn(`[MessageList] Failed to apply workflow update (attempt ${retryCount + 1})`);
-                                        // 重试最多3次
-                                        if (retryCount < 2) {
-                                            setTimeout(() => {
-                                                applyWorkflowWithRetry(retryCount + 1);
-                                            }, 1000 * (retryCount + 1)); // 递增延迟：1s, 2s
-                                        } else {
-                                            console.error('[MessageList] Workflow update failed after 3 attempts');
-                                        }
-                                    }
-                                } catch (error) {
-                                    console.error(`[MessageList] Error in workflow update (attempt ${retryCount + 1}):`, error);
+                        const mismatchKey = `${message.id}_workflow`;
+                        const mismatchSeenKey = `mismatch_seen_${workflowUpdateKey}`;
+
+                        const applyWorkflowWithRetry = async (retryCount = 0) => {
+                            try {
+                                const { applyNewWorkflow } = await import('../../utils/graphUtils');
+                                const success = applyNewWorkflow(workflow_data);
+
+                                if (success) {
+                                    console.log('[MessageList] Successfully applied workflow update');
+                                    // 标记该更新已处理（只有成功时才标记）
+                                    processedUpdates.current.add(workflowUpdateKey);
+                                    setPendingWorkflowMismatches(prev => {
+                                        if (!(mismatchKey in prev)) return prev;
+                                        const next = { ...prev };
+                                        delete next[mismatchKey];
+                                        return next;
+                                    });
+                                } else {
+                                    console.warn(`[MessageList] Failed to apply workflow update (attempt ${retryCount + 1})`);
                                     // 重试最多3次
                                     if (retryCount < 2) {
                                         setTimeout(() => {
                                             applyWorkflowWithRetry(retryCount + 1);
-                                        }, 1000 * (retryCount + 1));
+                                        }, 1000 * (retryCount + 1)); // 递增延迟：1s, 2s
+                                    } else {
+                                        console.error('[MessageList] Workflow update failed after 3 attempts');
                                     }
                                 }
-                            };
-                            
-                            applyWorkflowWithRetry();
+                            } catch (error) {
+                                console.error(`[MessageList] Error in workflow update (attempt ${retryCount + 1}):`, error);
+                                // 重试最多3次
+                                if (retryCount < 2) {
+                                    setTimeout(() => {
+                                        applyWorkflowWithRetry(retryCount + 1);
+                                    }, 1000 * (retryCount + 1));
+                                }
+                            }
+                        };
+
+                        if (!processedUpdates.current.has(workflowUpdateKey) && !processedUpdates.current.has(mismatchSeenKey)) {
+                            // 只在第一次见到这条ext时判断一次是否属于当前激活的tab，避免重试时因为
+                            // 用户又切回来/切走而反复改变结论。
+                            const activeIdentity = extWorkflowKey ? getActiveWorkflowIdentity() : null;
+                            if (extWorkflowKey && activeIdentity && activeIdentity.workflow_key !== extWorkflowKey) {
+                                processedUpdates.current.add(mismatchSeenKey);
+                                setPendingWorkflowMismatches(prev => ({
+                                    ...prev,
+                                    [mismatchKey]: {
+                                        workflowKey: extWorkflowKey,
+                                        apply: () => {
+                                            const nowIdentity = getActiveWorkflowIdentity();
+                                            if (nowIdentity.workflow_key === extWorkflowKey) {
+                                                applyWorkflowWithRetry();
+                                            } else {
+                                                console.warn('[MessageList] Still not on the target workflow tab; not applying.');
+                                            }
+                                        }
+                                    }
+                                }));
+                            } else {
+                                applyWorkflowWithRetry();
+                            }
+                        }
+
+                        if (pendingWorkflowMismatches[mismatchKey]) {
+                            const mismatch = pendingWorkflowMismatches[mismatchKey];
+                            workflowMismatchBanner = (
+                                <div key={`workflow_mismatch_${message.id}`} className="my-2 p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-800 text-sm flex items-center justify-between gap-3">
+                                    <span>This change belongs to workflow <strong>{mismatch.workflowKey}</strong> — switch to that tab and click Apply.</span>
+                                    <button
+                                        className="shrink-0 px-3 py-1 rounded bg-amber-500 text-white text-xs hover:bg-amber-600"
+                                        onClick={() => mismatch.apply()}
+                                    >
+                                        Apply
+                                    </button>
+                                </div>
+                            );
                         }
                     }
                 }
 
-                
+
                 // 处理参数更新：实时更新画布 
                 // "changes": [
                 //     {
@@ -318,47 +371,89 @@ export function MessageList({ messages, latestInput, onOptionClick, installedNod
                 //     }
                 // ]
                 if (paramUpdateExt && paramUpdateExt.data) {
-                    const { changes } = paramUpdateExt.data;
+                    const { changes, workflow_key: extWorkflowKey } = paramUpdateExt.data;
                     if (typeof window !== 'undefined' && (window as any).app && changes) {
                         // 使用更具体的key，包含changes的hash以检测实际内容变化
                         const contentHash = JSON.stringify(changes).slice(0, 100); // 简单的内容标识
                         const paramUpdateKey = `param_update_${message.id}_${contentHash}`;
-                        
-                        if (!processedUpdates.current.has(paramUpdateKey)) {
-                            const applyParamsWithRetry = async (retryCount = 0) => {
-                                try {
-                                    const { applyParameterChanges } = await import('../../utils/graphUtils');
-                                    // 支持单个change对象或changes数组
-                                    const changesList = Array.isArray(changes) ? changes : [changes];
-                                    const success = applyParameterChanges(changesList);
-                                    
-                                    if (success) {
-                                        console.log(`[MessageList] Successfully applied ${changesList.length} parameter changes`);
-                                        // 标记该更新已处理（只有成功时才标记）
-                                        processedUpdates.current.add(paramUpdateKey);
-                                    } else {
-                                        console.warn(`[MessageList] Failed to apply parameter changes, changes is ${JSON.stringify(changesList)}, (attempt ${retryCount + 1})`);
-                                        // 重试最多3次
-                                        if (retryCount < 2) {
-                                            setTimeout(() => {
-                                                applyParamsWithRetry(retryCount + 1);
-                                            }, 1000 * (retryCount + 1)); // 递增延迟：1s, 2s
-                                        } else {
-                                            console.error('[MessageList] Parameter update failed after 3 attempts');
-                                        }
-                                    }
-                                } catch (error) {
-                                    console.error(`[MessageList] Error in parameter update (attempt ${retryCount + 1}):`, error);
+                        const mismatchKey = `${message.id}_param`;
+                        const mismatchSeenKey = `mismatch_seen_${paramUpdateKey}`;
+
+                        const applyParamsWithRetry = async (retryCount = 0) => {
+                            try {
+                                const { applyParameterChanges } = await import('../../utils/graphUtils');
+                                // 支持单个change对象或changes数组
+                                const changesList = Array.isArray(changes) ? changes : [changes];
+                                const success = applyParameterChanges(changesList);
+
+                                if (success) {
+                                    console.log(`[MessageList] Successfully applied ${changesList.length} parameter changes`);
+                                    // 标记该更新已处理（只有成功时才标记）
+                                    processedUpdates.current.add(paramUpdateKey);
+                                    setPendingWorkflowMismatches(prev => {
+                                        if (!(mismatchKey in prev)) return prev;
+                                        const next = { ...prev };
+                                        delete next[mismatchKey];
+                                        return next;
+                                    });
+                                } else {
+                                    console.warn(`[MessageList] Failed to apply parameter changes, changes is ${JSON.stringify(changesList)}, (attempt ${retryCount + 1})`);
                                     // 重试最多3次
                                     if (retryCount < 2) {
                                         setTimeout(() => {
                                             applyParamsWithRetry(retryCount + 1);
-                                        }, 1000 * (retryCount + 1));
+                                        }, 1000 * (retryCount + 1)); // 递增延迟：1s, 2s
+                                    } else {
+                                        console.error('[MessageList] Parameter update failed after 3 attempts');
                                     }
                                 }
-                            };
-                            
-                            applyParamsWithRetry();
+                            } catch (error) {
+                                console.error(`[MessageList] Error in parameter update (attempt ${retryCount + 1}):`, error);
+                                // 重试最多3次
+                                if (retryCount < 2) {
+                                    setTimeout(() => {
+                                        applyParamsWithRetry(retryCount + 1);
+                                    }, 1000 * (retryCount + 1));
+                                }
+                            }
+                        };
+
+                        if (!processedUpdates.current.has(paramUpdateKey) && !processedUpdates.current.has(mismatchSeenKey)) {
+                            const activeIdentity = extWorkflowKey ? getActiveWorkflowIdentity() : null;
+                            if (extWorkflowKey && activeIdentity && activeIdentity.workflow_key !== extWorkflowKey) {
+                                processedUpdates.current.add(mismatchSeenKey);
+                                setPendingWorkflowMismatches(prev => ({
+                                    ...prev,
+                                    [mismatchKey]: {
+                                        workflowKey: extWorkflowKey,
+                                        apply: () => {
+                                            const nowIdentity = getActiveWorkflowIdentity();
+                                            if (nowIdentity.workflow_key === extWorkflowKey) {
+                                                applyParamsWithRetry();
+                                            } else {
+                                                console.warn('[MessageList] Still not on the target workflow tab; not applying.');
+                                            }
+                                        }
+                                    }
+                                }));
+                            } else {
+                                applyParamsWithRetry();
+                            }
+                        }
+
+                        if (pendingWorkflowMismatches[mismatchKey]) {
+                            const mismatch = pendingWorkflowMismatches[mismatchKey];
+                            workflowMismatchBanner = (
+                                <div key={`param_mismatch_${message.id}`} className="my-2 p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-800 text-sm flex items-center justify-between gap-3">
+                                    <span>This change belongs to workflow <strong>{mismatch.workflowKey}</strong> — switch to that tab and click Apply.</span>
+                                    <button
+                                        className="shrink-0 px-3 py-1 rounded bg-amber-500 text-white text-xs hover:bg-amber-600"
+                                        onClick={() => mismatch.apply()}
+                                    >
+                                        Apply
+                                    </button>
+                                </div>
+                            );
                         }
                     }
                 }
@@ -387,6 +482,7 @@ export function MessageList({ messages, latestInput, onOptionClick, installedNod
                                             
                                             if (workflowUI) {
                                                 // 调用API更新workflow_ui字段
+                                                const identity = getActiveWorkflowIdentity(workflowPrompt.output);
                                                 const response = await fetch('/api/update-workflow-ui', {
                                                     method: 'POST',
                                                     headers: {
@@ -394,7 +490,9 @@ export function MessageList({ messages, latestInput, onOptionClick, installedNod
                                                     },
                                                     body: JSON.stringify({
                                                         checkpoint_id: checkpointId,
-                                                        workflow_data_ui: workflowUI
+                                                        workflow_data_ui: workflowUI,
+                                                        workflow_key: identity.workflow_key,
+                                                        workflow_hash: identity.workflow_hash
                                                     })
                                                 });
                                                 
@@ -679,6 +777,16 @@ export function MessageList({ messages, latestInput, onOptionClick, installedNod
                             </Suspense>
                         );
                     }
+                }
+
+                // 如果这条消息的workflow_update/param_update属于另一个tab，把提示banner叠加在原有组件之上
+                if (workflowMismatchBanner) {
+                    ExtComponent = (
+                        <div key={`with_mismatch_${message.id}`}>
+                            {workflowMismatchBanner}
+                            {ExtComponent}
+                        </div>
+                    );
                 }
 
                 // 如果是工作流成功消息或debug_guide格式，直接返回DebugGuide组件

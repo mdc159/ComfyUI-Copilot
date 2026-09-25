@@ -14,6 +14,7 @@ import { fetchApi } from "../Api";
 import { Message, ChatResponse, OptimizedWorkflowRequest, OptimizedWorkflowResponse, Node, ExtItem, TrackEventRequest } from "../types/types";
 import { generateUUID } from '../utils/uuid';
 import { app } from '../utils/comfyapp';
+import { getActiveWorkflowIdentity, WorkflowIdentity } from '../utils/graphUtils';
 
 const BASE_URL = config.apiBaseUrl
 
@@ -211,11 +212,13 @@ export namespace WorkflowChatAPI {
         try {
           console.log('Saving workflow checkpoint before invoke...');
           const workflowPrompt = await app.graphToPrompt();
+          const workflowIdentity = getActiveWorkflowIdentity(workflowPrompt.output);
           const checkpointData = await saveWorkflowCheckpointBeforeInvoke(
             sessionId,
             workflowPrompt.output,  // API format
             workflowPrompt.workflow,  // UI format
-            userMessageId
+            userMessageId,
+            workflowIdentity
           );
           workflowCheckpointId = checkpointData.checkpoint_id;
           console.log(`Successfully saved workflow checkpoint with ID: ${workflowCheckpointId}`);
@@ -536,8 +539,9 @@ export namespace WorkflowChatAPI {
   }
 
   export async function* streamDebugAgent(
-    workflowData: any, 
-    abortSignal?: AbortSignal
+    workflowData: any,
+    abortSignal?: AbortSignal,
+    workflowIdentity?: WorkflowIdentity
   ): AsyncGenerator<ChatResponse> {
     try {
       const browserLanguage = app.extensionManager.setting.get('Comfy.Locale');
@@ -575,7 +579,9 @@ export namespace WorkflowChatAPI {
         headers: headers,
         body: JSON.stringify({
           session_id: session_id,
-          workflow_data: workflowData['output']
+          workflow_data: workflowData['output'],
+          workflow_key: workflowIdentity?.workflow_key,
+          workflow_hash: workflowIdentity?.workflow_hash
         }),
         signal: controller.signal
       });
@@ -649,7 +655,8 @@ export namespace WorkflowChatAPI {
     sessionId: string,
     workflowApi: any,
     workflowUi?: any,
-    checkpointType: 'debug_start' | 'debug_complete' = 'debug_start'
+    checkpointType: 'debug_start' | 'debug_complete' = 'debug_start',
+    workflowIdentity?: WorkflowIdentity
   ): Promise<{ version_id: number; checkpoint_type: string }> {
     try {
       const response = await fetch('/api/save-workflow-checkpoint', {
@@ -662,7 +669,9 @@ export namespace WorkflowChatAPI {
           session_id: sessionId,
           workflow_api: workflowApi,
           workflow_ui: workflowUi,
-          checkpoint_type: checkpointType
+          checkpoint_type: checkpointType,
+          workflow_key: workflowIdentity?.workflow_key,
+          workflow_hash: workflowIdentity?.workflow_hash
         }),
       });
 
@@ -711,7 +720,8 @@ export namespace WorkflowChatAPI {
     sessionId: string,
     workflowApi: any,
     workflowUi: any,
-    messageId: string
+    messageId: string,
+    workflowIdentity?: WorkflowIdentity
   ): Promise<{ checkpoint_id: number; checkpoint_type: string; message_id: string }> {
     try {
       const response = await fetch('/api/save-workflow-checkpoint', {
@@ -725,7 +735,9 @@ export namespace WorkflowChatAPI {
           workflow_api: workflowApi,
           workflow_ui: workflowUi,
           checkpoint_type: 'user_message_checkpoint',
-          message_id: messageId
+          message_id: messageId,
+          workflow_key: workflowIdentity?.workflow_key,
+          workflow_hash: workflowIdentity?.workflow_hash
         }),
       });
 

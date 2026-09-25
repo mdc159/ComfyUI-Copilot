@@ -18,7 +18,7 @@ from openai.types.responses import ResponseTextDeltaEvent
 from ..service.parameter_tools import *
 from ..service.link_agent_tools import *
 from ..dao.workflow_table import get_workflow_data, save_workflow_data
-from ..utils.request_context import get_session_id, get_config
+from ..utils.request_context import get_session_id, get_config, set_request_context
 from ..tools.run_workflow import run_workflow
 from ..tools.runtime_errors import analyze_error
 from ..tools.graph_edit import replace_node_class
@@ -69,12 +69,22 @@ def save_current_workflow(workflow_data: str) -> str:
             
         # 解析JSON字符串
         workflow_dict = json.loads(workflow_data) if isinstance(workflow_data, str) else workflow_data
-        
+
+        config = get_config() or {"session_id": session_id}
+        workflow_key, workflow_hash = get_workflow_identity_from_config(config)
+        write_attributes = {"action": "debug_save", "description": "Workflow saved during debugging"}
+        if workflow_key:
+            write_attributes["workflow_key"] = workflow_key
+        if workflow_hash:
+            write_attributes["workflow_hash"] = workflow_hash
+
         version_id = save_workflow_data(
-            session_id, 
-            workflow_dict, 
-            attributes={"action": "debug_save", "description": "Workflow saved during debugging"}
+            session_id,
+            workflow_dict,
+            attributes=write_attributes
         )
+        # Later reads in this debug run should see this saved version, not "latest for session".
+        repin_workflow_version(version_id)
         return json.dumps({
             "success": True,
             "version_id": version_id,
@@ -108,13 +118,25 @@ async def debug_workflow_errors(workflow_data: Dict[str, Any]):
         
         # 1. 保存工作流数据到数据库
         log.info(f"Saving workflow data for session {session_id}")
+        workflow_key = config.get('workflow_key')
+        workflow_hash = config.get('workflow_hash')
+        start_attributes = {"action": "debug_start", "description": "Initial workflow save for debugging"}
+        if workflow_key:
+            start_attributes["workflow_key"] = workflow_key
+        if workflow_hash:
+            start_attributes["workflow_hash"] = workflow_hash
         save_result = save_workflow_data(
-            session_id, 
-            workflow_data, 
-            attributes={"action": "debug_start", "description": "Initial workflow save for debugging"}
+            session_id,
+            workflow_data,
+            attributes=start_attributes
         )
         log.info(f"Workflow saved with version ID: {save_result}")
-        
+        # Pin the whole debug run to the version we just saved: every tool call below reads
+        # this version (and the config it re-derives from) instead of "latest row for session",
+        # so a tab switch or another writer mid-run can no longer redirect this run.
+        config['workflow_checkpoint_id'] = save_result
+        set_request_context(session_id, save_result, config)
+
         agent = create_agent(
             name="ComfyUI-Debug-Coordinator",
             instructions=f"""You are a ComfyUI workflow debugging coordinator. Your role is to analyze workflow errors and coordinate with specialized agents to fix them.
@@ -593,18 +615,27 @@ Start by validating the workflow to see its current state.""",
         # Save final workflow checkpoint after debugging completion
         debug_completion_checkpoint_id = None
         try:
-            current_workflow = get_workflow_data(session_id)
+            # Re-read config: tool writes during the run re-pin workflow_checkpoint_id in the
+            # request context, so this resolves to the agent's own last edit, not "latest for session".
+            final_config = get_config() or config
+            current_workflow = get_workflow_data_from_config(final_config)
             if current_workflow:
+                final_workflow_key, final_workflow_hash = get_workflow_identity_from_config(final_config)
+                final_attributes = {
+                    "checkpoint_type": "debug_complete",
+                    "description": "Workflow state after debug completion",
+                    "action": "debug_complete",
+                    "final_agent": current_agent
+                }
+                if final_workflow_key:
+                    final_attributes["workflow_key"] = final_workflow_key
+                if final_workflow_hash:
+                    final_attributes["workflow_hash"] = final_workflow_hash
                 debug_completion_checkpoint_id = save_workflow_data(
-                    session_id, 
+                    session_id,
                     current_workflow,
                     workflow_data_ui=None,  # UI format not available here
-                    attributes={
-                        "checkpoint_type": "debug_complete",
-                        "description": "Workflow state after debug completion",
-                        "action": "debug_complete",
-                        "final_agent": current_agent
-                    }
+                    attributes=final_attributes
                 )
                 log.info(f"Debug completion checkpoint saved with ID: {debug_completion_checkpoint_id}")
         except Exception as checkpoint_error:

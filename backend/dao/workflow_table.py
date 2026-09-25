@@ -101,6 +101,30 @@ class DatabaseManager:
         finally:
             session.close() 
     
+    def get_latest_workflow_for_key(self, session_id: str, workflow_key: str) -> Optional[Dict[str, Any]]:
+        """最新的、attributes.workflow_key与给定key匹配的版本（用于跨tab隔离），不存在则返回None"""
+        session = self.get_session()
+        try:
+            versions = session.query(WorkflowVersion)\
+                .filter(WorkflowVersion.session_id == session_id)\
+                .order_by(WorkflowVersion.id.desc())\
+                .all()
+            for version in versions:
+                if not version.attributes:
+                    continue
+                try:
+                    attrs = json.loads(version.attributes)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(attrs, dict) and attrs.get('workflow_key') == workflow_key:
+                    result = version.to_dict()
+                    if version.workflow_data_ui:
+                        result['workflow_data_ui'] = json.loads(version.workflow_data_ui)
+                    return result
+            return None
+        finally:
+            session.close()
+
     def get_workflow_version_by_id(self, version_id: int) -> Optional[Dict[str, Any]]:
         """根据版本ID获取工作流数据"""
         session = self.get_session()
@@ -140,6 +164,29 @@ class DatabaseManager:
         finally:
             session.close()
     
+    def merge_workflow_attributes(self, version_id: int, attributes: Dict[str, Any]) -> bool:
+        """将attributes合并进指定版本的现有attributes（覆盖同名键），不影响workflow_data/workflow_data_ui"""
+        session = self.get_session()
+        try:
+            version = session.query(WorkflowVersion)\
+                .filter(WorkflowVersion.id == version_id)\
+                .first()
+
+            if version:
+                existing = json.loads(version.attributes) if version.attributes else {}
+                if not isinstance(existing, dict):
+                    existing = {}
+                existing.update(attributes)
+                version.attributes = json.dumps(existing)
+                session.commit()
+                return True
+            return False
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
+
     def update_workflow_ui(self, version_id: int, workflow_data_ui: Dict[str, Any]) -> bool:
         """只更新指定版本的workflow_data_ui字段，不影响其他字段"""
         session = self.get_session()
@@ -174,10 +221,18 @@ def save_workflow_data(session_id: str, workflow_data: Dict[str, Any], workflow_
     """保存工作流数据的便捷函数"""
     return db_manager.save_workflow_version(session_id, workflow_data, workflow_data_ui, attributes)
 
+def get_latest_workflow_for_key(session_id: str, workflow_key: str) -> Optional[Dict[str, Any]]:
+    """获取指定session下、attributes.workflow_key匹配的最新版本的便捷函数"""
+    return db_manager.get_latest_workflow_for_key(session_id, workflow_key)
+
 def get_workflow_data_by_id(version_id: int) -> Optional[Dict[str, Any]]:
     """根据版本ID获取工作流数据的便捷函数"""
     return db_manager.get_workflow_version_by_id(version_id)
 
 def update_workflow_ui_by_id(version_id: int, workflow_data_ui: Dict[str, Any]) -> bool:
     """只更新指定版本的workflow_data_ui字段的便捷函数"""
-    return db_manager.update_workflow_ui(version_id, workflow_data_ui) 
+    return db_manager.update_workflow_ui(version_id, workflow_data_ui)
+
+def merge_workflow_attributes(version_id: int, attributes: Dict[str, Any]) -> bool:
+    """合并指定版本attributes的便捷函数"""
+    return db_manager.merge_workflow_attributes(version_id, attributes) 
