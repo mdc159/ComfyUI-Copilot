@@ -53,9 +53,9 @@ Two findings that shaped the order:
 |---|-------|--------|------------|
 | 0 | Foundation | done (2.2.0) | — |
 | 1 | Debugger sees real execution | done (2.2.0) | 0 |
-| 1b | Debug binds to one workflow tab; remove fake showcase chips | in progress | 1 |
-| 2 | Node search, node info, install guide (offline) | in progress | 0 |
-| 3 | Web search | todo | 0 |
+| 1b | Debug binds to one workflow tab; remove fake showcase chips | done (2.3.0) | 1 |
+| 2 | Node search, node info, install guide (offline) | done (2.3.0) | 0 |
+| 3 | Web search | in progress | 0 |
 | 4 | Layout: keep positions, tidy new graphs | todo | — |
 | 5 | Workflow library (`recall_workflow`) + Accept flow | todo | 0, 2 |
 | 6 | Workflow generation (`gen_workflow`) | todo | 1, 2, 5 |
