@@ -7,7 +7,22 @@ see [decisions/2026-09-24-fork-is-canonical.md](decisions/2026-09-24-fork-is-can
 Format: newest first. Each release lists what changed, how it was verified, and
 where it was deployed. Versions follow `pyproject.toml`; tags are `vX.Y.Z`.
 
-## Unreleased
+## 2.3.0 — 2026-09-24
+
+### Changed
+- Debug and rewrite runs are now bound to the workflow tab they started on. Before,
+  Copilot identified "the workflow" as the newest one saved under a browser-wide
+  session, so with several ComfyUI tabs open a debug run could read another tab's
+  graph mid-run, and its fix could be written into whatever tab was active when it
+  arrived. Now every request carries the tab's workflow identity, the run is pinned
+  to the version saved at its start, and the UI refuses to apply a change to a
+  different tab — it shows "This change belongs to workflow X — switch to that tab
+  and click Apply" instead.
+- The suggestion chips shown in an empty chat (for example "debug the workflow of
+  the current canvas") used to replay a pre-recorded demo conversation and never
+  contacted the backend; the recorded debug always ended "ready for execution". The
+  recordings are deleted; the debug chip now runs the real debugger and the other
+  chips send their text as a real message.
 
 ### Added
 - Offline node index built from ComfyUI-Manager's node database (PR #9): a local
@@ -27,10 +42,12 @@ where it was deployed. Versions follow `pyproject.toml`; tags are `vX.Y.Z`.
   is off, the agent is told to say it found nothing rather than invent node names.
 
 ### Verified
-- 78 tests pass on main at 43e6f73.
+- 82 tests pass on main at 17e0aa7; one timing-sensitive test
+  (`test_concurrent_completions_on_one_connection`) can fail on a loaded machine
+  and is being tightened.
 
 ### Deployed
-- Not yet.
+- `D:\ComfyUI_windows_portable` on 2026-09-24.
 
 ## 2.2.0 — 2026-09-24
 
